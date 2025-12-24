@@ -8,15 +8,15 @@ class JWTConfig:
 
 @dataclass
 class DBConfig:
-    """ PostgreSQL """
     host: str | None = None
     port: int | None = None
     name: str | None = None
     user: str | None = None
     password: str | None = None
 
-    """ SQLite """
-    path: str | None = None
+    @property
+    def url(self) -> str:
+        return f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
 
 @dataclass
 class RedisConfig:
@@ -26,6 +26,7 @@ class RedisConfig:
 @dataclass
 class Config:
     """ Config """
+    logging_level: str
     jwt: JWTConfig
     db: DBConfig
     redis: RedisConfig
@@ -35,6 +36,7 @@ def load_config(path: str | None) -> Config:
     env.read_env(path)
 
     return Config(
+        logging_level=env('LOGGING_LEVEL', 'INFO'),
         jwt=JWTConfig(
             secret_key=env('SECRET_KEY'),
         ),
@@ -44,7 +46,6 @@ def load_config(path: str | None) -> Config:
             name=env('DB_NAME', None),
             user=env('DB_USER', None),
             password=env('DB_PASSWORD', None),
-            path=env('DB_PATH', 'data/bot.db')
         ),
         redis=RedisConfig(
             host=env('REDIS_HOST', 'localhost'),
