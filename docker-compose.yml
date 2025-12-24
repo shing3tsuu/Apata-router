@@ -31,7 +31,7 @@ services:
       start_period: 40s
     command: >
       sh -c "
-        echo '=== Запуск в Docker Toolbox ===' &&
+        echo '=== Start in Docker Toolbox ===' &&
         echo 'IP хоста: 192.168.99.100' &&
         echo 'Connect to DB...' &&
         alembic upgrade head &&
@@ -90,4 +90,5 @@ volumes:
 
 networks:
   app-network:
+
     driver: bridge
