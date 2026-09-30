@@ -1,0 +1,1 @@
+"""Apata router application package."""

@@ -1,0 +1,59 @@
+version: "3"
+
+tasks:
+  default:
+    desc: Show available project commands
+    cmds:
+      - task --list
+
+  test:
+    aliases: [tests]
+    desc: Run tests from tests/
+    vars:
+      scope: '{{.scope | default "tests"}}'
+    cmds:
+      - uv run pytest {{.scope}}
+
+  test:ed:
+    desc: Run signature-verification tests
+    cmds:
+      - uv run pytest tests/unit/test_ed.py
+
+  ruff:
+    desc: Format code and apply safe lint fixes
+    cmds:
+      - uv run ruff check --fix .
+      - uv run ruff format .
+
+  mypy:
+    desc: Run static type checks
+    cmds:
+      - uv run mypy src tests
+
+  infra-up:
+    aliases: [start]
+    desc: Build and start the API, PostgreSQL, Redis, migrations, and Adminer
+    cmds:
+      - docker compose up --build -d apata-router adminer
+
+  migrate:
+    desc: Apply all Alembic migrations in the Compose environment
+    cmds:
+      - docker compose run --rm migrate
+
+  api-logs:
+    desc: Stream API container logs
+    cmds:
+      - docker compose logs -f apata-router
+
+  infra-stop:
+    aliases: [stop]
+    desc: Stop local infrastructure containers
+    cmds:
+      - docker compose stop postgres redis adminer
+
+  infra-down:
+    aliases: [down]
+    desc: Remove local infrastructure containers and network
+    cmds:
+      - docker compose down

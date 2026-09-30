@@ -1,0 +1,108 @@
+x-database-url: &database_url "postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+
+services:
+  apata-router:
+    build:
+      context: .
+      target: development
+    command:
+      [
+        "sh",
+        "-c",
+        "dependency_hash=$$(sha256sum pyproject.toml uv.lock | sha256sum | awk '{print $$1}'); if [ ! -f .venv/.apata-deps-hash ] || [ \"$$dependency_hash\" != \"$$(cat .venv/.apata-deps-hash)\" ]; then uv sync --frozen --group dev && printf '%s' \"$$dependency_hash\" > .venv/.apata-deps-hash; fi; exec uv run --no-sync --frozen uvicorn src.main:app --host 0.0.0.0 --port $$SERVER_PORT",
+      ]
+    ports:
+      - "${SERVER_PORT:-8000}:${SERVER_PORT:-8000}"
+    environment:
+      DATABASE_URL: *database_url
+      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/${REDIS_DB}"
+      SERVER_PORT: ${SERVER_PORT:-8000}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      AUTH_REGISTER_RATE_LIMIT: ${AUTH_REGISTER_RATE_LIMIT:-200/minute}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - .:/app
+      - router_venv:/app/.venv
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  migrate:
+    build:
+      context: .
+      target: production
+    command: ["uv", "run", "--no-sync", "--frozen", "alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: *database_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8.0-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --databases
+      - "128"
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  adminer:
+    image: adminer:standalone
+    restart: unless-stopped
+    ports:
+      - "${ADMINER_PORT:-8050}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  router_venv:
