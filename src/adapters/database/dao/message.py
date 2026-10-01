@@ -10,6 +10,7 @@ from src.adapters.database.dto import (
     CreateMessageFileDTO,
     CreateMessageTextDTO,
     MessageDTO,
+    MessageProcessingResultDTO,
 )
 from src.adapters.database.structures import Message
 
@@ -60,19 +61,45 @@ class MessageDAO:
         ]
 
     async def acknowledge_messages(
-        self, recipient_id: UUID, message_ids: Sequence[UUID]
+        self,
+        recipient_id: UUID,
+        results: Sequence[MessageProcessingResultDTO],
     ) -> int:
-        stmt = (
-            update(Message)
-            .where(
-                Message.recipient_id == recipient_id,
-                Message.id.in_(message_ids),
-                Message.is_delivered.is_(False),
+        acknowledged = 0
+        for failed in (False, True):
+            message_ids = [
+                result.message_id for result in results if result.failed is failed
+            ]
+            if not message_ids:
+                continue
+
+            stmt = (
+                update(Message)
+                .where(
+                    Message.recipient_id == recipient_id,
+                    Message.id.in_(message_ids),
+                    Message.is_delivered.is_(False),
+                )
+                .values(is_delivered=True, failed=failed)
             )
-            .values(is_delivered=True)
+            result = await self._session.execute(stmt)
+            acknowledged += cast(CursorResult[object], result).rowcount or 0
+        return acknowledged
+
+    async def get_failed_messages(self, sender_id: UUID) -> list[MessageDTO]:
+        stmt = (
+            select(Message)
+            .where(
+                Message.sender_id == sender_id,
+                Message.failed.is_(True),
+            )
+            .order_by(Message.timestamp, Message.id)
         )
-        result = await self._session.execute(stmt)
-        return cast(CursorResult[object], result).rowcount or 0
+        results = await self._session.scalars(stmt)
+        return [
+            MessageDTO.model_validate(result, from_attributes=True)
+            for result in results
+        ]
 
     async def _add_message(self, message: CreateMessagePayloadDTO) -> MessageDTO:
         stmt = insert(Message).values(**message.model_dump()).returning(Message)

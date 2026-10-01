@@ -7,6 +7,7 @@ from src.adapters.database.dao.message import MessageDAO
 from src.adapters.database.dto import (
     CreateMessageFileDTO,
     CreateMessageTextDTO,
+    MessageProcessingResultDTO,
 )
 from src.adapters.database.structures import (
     MessageContentMimeTypeEnum,
@@ -92,14 +93,41 @@ async def test_get_undelivered_messages_reads_recipient_inbox() -> None:
 
 async def test_acknowledge_messages_updates_only_recipient_messages() -> None:
     session = AsyncMock(spec=AsyncSession)
-    database_result = MagicMock()
-    database_result.rowcount = 2
-    session.execute.return_value = database_result
+    successful_result = MagicMock()
+    successful_result.rowcount = 1
+    failed_result = MagicMock()
+    failed_result.rowcount = 1
+    session.execute.side_effect = [successful_result, failed_result]
     recipient_id = uuid4()
+    successful_message_id = uuid4()
+    failed_message_id = uuid4()
 
     acknowledged = await MessageDAO(session).acknowledge_messages(
-        recipient_id, [uuid4(), uuid4()]
+        recipient_id,
+        [
+            MessageProcessingResultDTO(
+                message_id=successful_message_id,
+                failed=False,
+            ),
+            MessageProcessingResultDTO(
+                message_id=failed_message_id,
+                failed=True,
+            ),
+        ],
     )
 
     assert acknowledged == 2
-    session.execute.assert_awaited_once()
+    assert session.execute.await_count == 2
+
+
+async def test_get_failed_messages_reads_sender_outbox() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    message = _text_message()
+    failed_message = message.model_copy(update={"is_delivered": True, "failed": True})
+    session.scalars.return_value = [failed_message]
+
+    result = await MessageDAO(session).get_failed_messages(message.sender_id)
+
+    assert [item.id for item in result] == [message.id]
+    assert result[0].failed is True
+    session.scalars.assert_awaited_once()

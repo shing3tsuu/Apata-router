@@ -15,6 +15,7 @@ from src.adapters.database.dto import (
     CreateContactDTO,
     CreateMessageTextDTO,
     MessageDTO,
+    MessageProcessingResultDTO,
 )
 from src.adapters.database.service.message import MessageService
 from src.adapters.database.structures import ContactStatusEnum
@@ -154,14 +155,32 @@ async def test_add_chat_messages_rejects_users_outside_chat() -> None:
 async def test_acknowledge_messages_commits_delivery_updates() -> None:
     service, message_dao, _, _, common_dao = _service()
     recipient_id = uuid4()
-    message_ids = [uuid4(), uuid4()]
+    results = [
+        MessageProcessingResultDTO(message_id=uuid4(), failed=False),
+        MessageProcessingResultDTO(message_id=uuid4(), failed=True),
+    ]
     message_dao.acknowledge_messages.return_value = 2
 
-    acknowledged = await service.acknowledge_messages(recipient_id, message_ids)
+    acknowledged = await service.acknowledge_messages(recipient_id, results)
 
     assert acknowledged == 2
-    message_dao.acknowledge_messages.assert_awaited_once_with(recipient_id, message_ids)
+    message_dao.acknowledge_messages.assert_awaited_once_with(recipient_id, results)
     common_dao.commit.assert_awaited_once()
+
+
+async def test_get_failed_messages_reads_without_committing() -> None:
+    service, message_dao, _, _, common_dao = _service()
+    sender_id = uuid4()
+    failed_message = _message(sender_id, uuid4(), None).model_copy(
+        update={"is_delivered": True, "failed": True}
+    )
+    message_dao.get_failed_messages.return_value = [failed_message]
+
+    messages = await service.get_failed_messages(sender_id)
+
+    assert messages[0].failed is True
+    message_dao.get_failed_messages.assert_awaited_once_with(sender_id)
+    common_dao.commit.assert_not_awaited()
 
 
 async def test_add_text_message_creates_blank_contact_once() -> None:

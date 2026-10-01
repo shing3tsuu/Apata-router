@@ -27,6 +27,7 @@ def test_text_message_dto_accepts_ciphertext() -> None:
     assert message.content == "encrypted-text"
     assert message.file_content is None
     assert message.file_mime_type is MessageContentMimeTypeEnum.TEXT
+    assert message.failed is None
 
 
 def test_file_message_dto_accepts_encrypted_bytes_and_original_metadata() -> None:

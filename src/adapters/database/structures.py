@@ -305,6 +305,7 @@ class Message(Base):
 
     __table_args__ = (
         Index("ix_messages_recipient_delivered", "recipient_id", "is_delivered"),
+        Index("ix_messages_sender_failed", "sender_id", "failed"),
         Index("ix_messages_chat_timestamp", "chat_id", "timestamp"),
         CheckConstraint(
             "(content IS NOT NULL) <> (file_content IS NOT NULL)",
@@ -313,6 +314,10 @@ class Message(Base):
         CheckConstraint(
             "file_size IS NULL OR file_size >= 0",
             name="ck_messages_nonnegative_file_size",
+        ),
+        CheckConstraint(
+            "failed IS NULL OR is_delivered",
+            name="ck_messages_failed_requires_delivery",
         ),
     )
 
@@ -357,6 +362,7 @@ class Message(Base):
         index=True,
     )
     is_delivered: Mapped[bool] = mapped_column(default=False)
+    failed: Mapped[bool | None] = mapped_column(nullable=True)
 
     ephemeral_public_key: Mapped[str] = mapped_column(Text)
     ephemeral_signature: Mapped[str] = mapped_column(Text)

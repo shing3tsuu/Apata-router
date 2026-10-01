@@ -151,6 +151,7 @@ class CreateMessageDTO(BaseModel):
     file_mime_type: MessageContentMimeTypeEnum = MessageContentMimeTypeEnum.TEXT
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     is_delivered: bool = False
+    failed: bool | None = None
     ephemeral_public_key: str = Field(min_length=1)
     ephemeral_signature: str = Field(min_length=1)
 
@@ -209,8 +210,9 @@ class MessageDTO(CreateMessageDTO):
     model_config = ConfigDict(from_attributes=True)
 
 
-class AcknowledgeMessagesDTO(BaseModel):
-    message_ids: list[UUID] = Field(min_length=1, max_length=1000)
+class MessageProcessingResultDTO(BaseModel):
+    message_id: UUID
+    failed: bool
 
 
 class CreateFileTransferDTO(BaseModel):

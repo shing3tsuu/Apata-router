@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.adapters.database.structures import MessageContentTypeEnum
 
@@ -20,8 +20,20 @@ class SendTextMessageRequest(BaseModel):
     ephemeral_signature: str = Field(min_length=1)
 
 
+class MessageProcessingResult(BaseModel):
+    message_id: UUID
+    failed: bool
+
+
 class AcknowledgeMessagesRequest(BaseModel):
-    message_ids: list[UUID] = Field(min_length=1, max_length=1000)
+    results: list[MessageProcessingResult] = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_unique_message_ids(self) -> "AcknowledgeMessagesRequest":
+        message_ids = [result.message_id for result in self.results]
+        if len(message_ids) != len(set(message_ids)):
+            raise ValueError("Acknowledgement message IDs must be unique")
+        return self
 
 
 class MessageTextResponse(BaseModel):
@@ -36,6 +48,7 @@ class MessageTextResponse(BaseModel):
     message: str = Field(validation_alias="content")
     timestamp: datetime
     is_delivered: bool
+    failed: bool | None
     ephemeral_public_key: str
     ephemeral_signature: str
 
@@ -47,3 +60,19 @@ class UndeliveredMessagesResponse(BaseModel):
 
 class AcknowledgeMessagesResponse(BaseModel):
     acknowledged: int
+
+
+class FailedMessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    recipient_id: UUID
+    chat_id: UUID | None
+    timestamp: datetime
+    is_delivered: bool
+    failed: Literal[True]
+
+
+class FailedMessagesResponse(BaseModel):
+    has_messages: bool
+    messages: list[FailedMessageResponse]

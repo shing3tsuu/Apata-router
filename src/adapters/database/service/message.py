@@ -13,6 +13,7 @@ from src.adapters.database.dto import (
     CreateMessageFileDTO,
     CreateMessageTextDTO,
     MessageDTO,
+    MessageProcessingResultDTO,
 )
 from src.errors.error import ChatNotFoundError, ChatParticipantNotFoundError
 
@@ -44,9 +45,14 @@ class MessageService:
 
     @error_handler
     async def acknowledge_messages(
-        self, recipient_id: UUID, message_ids: Sequence[UUID]
+        self,
+        recipient_id: UUID,
+        results: Sequence[MessageProcessingResultDTO],
     ) -> int:
-        return await self._message_dao.acknowledge_messages(recipient_id, message_ids)
+        return await self._message_dao.acknowledge_messages(recipient_id, results)
+
+    async def get_failed_messages(self, sender_id: UUID) -> list[MessageDTO]:
+        return await self._message_dao.get_failed_messages(sender_id)
 
     @error_handler
     async def add_chat_messages(

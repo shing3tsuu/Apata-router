@@ -7,13 +7,18 @@ from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, Body, Depends, status
 from fastapi.responses import JSONResponse
 
-from src.adapters.database.dto import CreateMessageTextDTO
+from src.adapters.database.dto import (
+    CreateMessageTextDTO,
+    MessageProcessingResultDTO,
+)
 from src.adapters.database.service import MessageService
 from src.adapters.encryption.service.jwt import JWTService
 from src.adapters.realtime import RealtimePublisher
 from src.application.models.message import (
     AcknowledgeMessagesRequest,
     AcknowledgeMessagesResponse,
+    FailedMessageResponse,
+    FailedMessagesResponse,
     MessageTextResponse,
     SendTextMessageRequest,
     UndeliveredMessagesResponse,
@@ -222,6 +227,37 @@ class MessageAPI:
                 token, jwt_service, logger
             )
             acknowledged = await message_service.acknowledge_messages(
-                current_user_id, request_data.message_ids
+                current_user_id,
+                [
+                    MessageProcessingResultDTO(
+                        message_id=result.message_id,
+                        failed=result.failed,
+                    )
+                    for result in request_data.results
+                ],
             )
             return AcknowledgeMessagesResponse(acknowledged=acknowledged)
+
+        @self._message_router.get(
+            "/failed",
+            response_model=FailedMessagesResponse,
+        )
+        @inject
+        async def get_failed_messages(
+            auth_api: FromDishka[AuthAPI],
+            jwt_service: FromDishka[JWTService],
+            message_service: FromDishka[MessageService],
+            logger: FromDishka[logging.Logger],
+            token: str = Depends(AuthAPI.oauth2_scheme),
+        ) -> FailedMessagesResponse:
+            current_user_id = await auth_api.get_current_user(
+                token, jwt_service, logger
+            )
+            messages = await message_service.get_failed_messages(current_user_id)
+            failed_messages = [
+                FailedMessageResponse.model_validate(message) for message in messages
+            ]
+            return FailedMessagesResponse(
+                has_messages=bool(failed_messages),
+                messages=failed_messages,
+            )
