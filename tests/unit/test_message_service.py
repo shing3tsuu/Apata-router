@@ -19,15 +19,18 @@ from src.adapters.database.dto import (
 )
 from src.adapters.database.service.message import MessageService
 from src.adapters.database.structures import ContactStatusEnum
-from src.errors.error import ChatParticipantNotFoundError
+from src.errors.error import ChatMembershipConflictError, ChatMessageConflictError
 
 
 def _message(
     sender_id: UUID,
     recipient_id: UUID,
     chat_id: UUID | None,
+    *,
+    logical_message_id: UUID | None = None,
 ) -> CreateMessageTextDTO:
     return CreateMessageTextDTO(
+        logical_message_id=logical_message_id or chat_id,
         sender_id=sender_id,
         recipient_id=recipient_id,
         chat_id=chat_id,
@@ -65,6 +68,7 @@ def _service() -> tuple[
     chat_dao = AsyncMock(spec=ChatDAO)
     contact_dao = AsyncMock(spec=ContactDAO)
     common_dao = AsyncMock(spec=CommonDAO)
+    message_dao.get_chat_messages_by_logical_id.return_value = []
     return (
         MessageService(
             message_dao=message_dao,
@@ -89,7 +93,6 @@ async def test_add_chat_messages_validates_batch_then_uses_dao_once() -> None:
         _message(sender_id, second_recipient_id, chat_id),
     ]
     service, message_dao, chat_dao, contact_dao, common_dao = _service()
-    contact_dao.get_contact_between_users.return_value = None
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, sender_id)
     chat_dao.get_participants.return_value = [
         _participant(chat_id, sender_id),
@@ -104,10 +107,10 @@ async def test_add_chat_messages_validates_batch_then_uses_dao_once() -> None:
 
     assert len(result) == 2
     message_dao.add_chat_messages.assert_awaited_once_with(messages)
-    assert contact_dao.add_contact_request.await_count == 2
+    contact_dao.add_blank_contacts.assert_awaited_once()
     created_pairs = {
-        (call.args[0].sender_id, call.args[0].receiver_id)
-        for call in contact_dao.add_contact_request.await_args_list
+        (contact.sender_id, contact.receiver_id)
+        for contact in contact_dao.add_blank_contacts.await_args.args[0]
     }
     assert created_pairs == {
         (sender_id, first_recipient_id),
@@ -142,13 +145,104 @@ async def test_add_chat_messages_rejects_users_outside_chat() -> None:
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, sender_id)
     chat_dao.get_participants.return_value = [_participant(chat_id, sender_id)]
 
-    with pytest.raises(
-        ChatParticipantNotFoundError, match="must be a chat participant"
-    ):
+    with pytest.raises(ChatMembershipConflictError, match="membership changed"):
         await service.add_chat_messages([_message(sender_id, recipient_id, chat_id)])
 
     message_dao.add_chat_messages.assert_not_awaited()
-    contact_dao.add_contact_request.assert_not_awaited()
+    contact_dao.add_blank_contacts.assert_not_awaited()
+    common_dao.commit.assert_not_awaited()
+
+
+async def test_add_chat_messages_rejects_duplicate_recipients_without_writes() -> None:
+    chat_id = uuid4()
+    sender_id = uuid4()
+    recipient_id = uuid4()
+    logical_message_id = uuid4()
+    messages = [
+        _message(
+            sender_id,
+            recipient_id,
+            chat_id,
+            logical_message_id=logical_message_id,
+        ),
+        _message(
+            sender_id,
+            recipient_id,
+            chat_id,
+            logical_message_id=logical_message_id,
+        ),
+    ]
+    service, message_dao, chat_dao, contact_dao, common_dao = _service()
+    chat_dao.get_chat_by_id.return_value = _chat(chat_id, sender_id)
+    chat_dao.get_participants.return_value = [
+        _participant(chat_id, sender_id),
+        _participant(chat_id, recipient_id),
+    ]
+
+    with pytest.raises(ChatMembershipConflictError, match="must be unique"):
+        await service.add_chat_messages(messages)
+
+    message_dao.get_chat_messages_by_logical_id.assert_not_awaited()
+    contact_dao.add_blank_contacts.assert_not_awaited()
+    message_dao.add_chat_messages.assert_not_awaited()
+    common_dao.commit.assert_not_awaited()
+
+
+async def test_add_chat_messages_returns_matching_idempotent_batch() -> None:
+    chat_id = uuid4()
+    sender_id = uuid4()
+    recipient_id = uuid4()
+    logical_message_id = uuid4()
+    message = _message(
+        sender_id,
+        recipient_id,
+        chat_id,
+        logical_message_id=logical_message_id,
+    )
+    existing = MessageDTO.model_validate(message)
+    service, message_dao, chat_dao, contact_dao, common_dao = _service()
+    chat_dao.get_chat_by_id.return_value = _chat(chat_id, sender_id)
+    chat_dao.get_participants.return_value = [
+        _participant(chat_id, sender_id),
+        _participant(chat_id, recipient_id),
+    ]
+    message_dao.get_chat_messages_by_logical_id.return_value = [existing]
+
+    result = await service.add_chat_messages([message])
+
+    assert result == [existing]
+    contact_dao.add_blank_contacts.assert_not_awaited()
+    message_dao.add_chat_messages.assert_not_awaited()
+    common_dao.commit.assert_awaited_once()
+
+
+async def test_add_chat_messages_rejects_conflicting_logical_message_id() -> None:
+    chat_id = uuid4()
+    sender_id = uuid4()
+    recipient_id = uuid4()
+    logical_message_id = uuid4()
+    message = _message(
+        sender_id,
+        recipient_id,
+        chat_id,
+        logical_message_id=logical_message_id,
+    )
+    existing = MessageDTO.model_validate(message).model_copy(
+        update={"content": "different-ciphertext"}
+    )
+    service, message_dao, chat_dao, contact_dao, common_dao = _service()
+    chat_dao.get_chat_by_id.return_value = _chat(chat_id, sender_id)
+    chat_dao.get_participants.return_value = [
+        _participant(chat_id, sender_id),
+        _participant(chat_id, recipient_id),
+    ]
+    message_dao.get_chat_messages_by_logical_id.return_value = [existing]
+
+    with pytest.raises(ChatMessageConflictError, match="already used"):
+        await service.add_chat_messages([message])
+
+    contact_dao.add_blank_contacts.assert_not_awaited()
+    message_dao.add_chat_messages.assert_not_awaited()
     common_dao.commit.assert_not_awaited()
 
 

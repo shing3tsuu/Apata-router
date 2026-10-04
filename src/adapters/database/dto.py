@@ -138,6 +138,7 @@ class ChatParticipantChangeDTO(BaseModel):
 
 class CreateMessageDTO(BaseModel):
     id: UUID = Field(default_factory=uuid4)
+    logical_message_id: UUID | None = None
     sender_id: UUID
     recipient_id: UUID
     chat_id: UUID | None = None
@@ -157,6 +158,9 @@ class CreateMessageDTO(BaseModel):
 
     @model_validator(mode="after")
     def validate_payload(self) -> "CreateMessageDTO":
+        if self.logical_message_id is None:
+            self.logical_message_id = self.id
+
         has_content = self.content is not None
         has_file = self.file_content is not None
         if has_content == has_file:

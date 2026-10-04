@@ -1,10 +1,10 @@
 import logging
-from typing import Annotated
+from datetime import UTC, datetime
 from uuid import UUID
 
 from dishka import FromDishka
 from dishka.integrations.fastapi import inject
-from fastapi import APIRouter, Body, Depends, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
 
 from src.adapters.database.dto import (
@@ -20,10 +20,16 @@ from src.application.models.message import (
     FailedMessageResponse,
     FailedMessagesResponse,
     MessageTextResponse,
+    SendChatTextMessageRequest,
     SendTextMessageRequest,
     UndeliveredMessagesResponse,
 )
-from src.errors.error import ChatNotFoundError, ChatParticipantNotFoundError
+from src.errors.error import (
+    ChatMembershipConflictError,
+    ChatMessageConflictError,
+    ChatNotFoundError,
+    ChatParticipantNotFoundError,
+)
 
 from .user import AuthAPI
 
@@ -57,6 +63,7 @@ class MessageAPI:
             )
             message = CreateMessageTextDTO(
                 id=request_data.message_id,
+                logical_message_id=request_data.message_id,
                 sender_id=current_user_id,
                 recipient_id=request_data.recipient_id,
                 chat_id=request_data.chat_id,
@@ -123,9 +130,7 @@ class MessageAPI:
         @inject
         async def send_chat_text_messages(
             chat_id: UUID,
-            request_data: Annotated[
-                list[SendTextMessageRequest], Body(min_length=1, max_length=100)
-            ],
+            request_data: SendChatTextMessageRequest,
             auth_api: FromDishka[AuthAPI],
             jwt_service: FromDishka[JWTService],
             message_service: FromDishka[MessageService],
@@ -136,19 +141,21 @@ class MessageAPI:
             current_user_id = await auth_api.get_current_user(
                 token, jwt_service, logger
             )
+            timestamp = datetime.now(UTC)
             messages = [
                 CreateMessageTextDTO(
-                    id=message.message_id,
+                    id=delivery.message_id,
+                    logical_message_id=request_data.logical_message_id,
                     sender_id=current_user_id,
-                    recipient_id=message.recipient_id,
+                    recipient_id=delivery.recipient_id,
                     chat_id=chat_id,
-                    reply_to_id=message.reply_to_id,
-                    content_type=message.content_type,
-                    content=message.message,
-                    ephemeral_public_key=message.ephemeral_public_key,
-                    ephemeral_signature=message.ephemeral_signature,
+                    content_type=request_data.content_type,
+                    content=delivery.message,
+                    timestamp=timestamp,
+                    ephemeral_public_key=request_data.ephemeral_public_key,
+                    ephemeral_signature=request_data.ephemeral_signature,
                 )
-                for message in request_data
+                for delivery in request_data.deliveries
             ]
 
             try:
@@ -169,6 +176,15 @@ class MessageAPI:
                         "code": "chat_participant_forbidden",
                         "detail": "Chat participant access is forbidden",
                         "status_code": status.HTTP_403_FORBIDDEN,
+                    },
+                )
+            except (ChatMembershipConflictError, ChatMessageConflictError) as error:
+                return JSONResponse(
+                    status_code=status.HTTP_409_CONFLICT,
+                    content={
+                        "code": "chat_message_conflict",
+                        "detail": error.message,
+                        "status_code": status.HTTP_409_CONFLICT,
                     },
                 )
 

@@ -6,6 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.adapters.database.structures import MessageContentTypeEnum
 
+MAX_CHAT_RECIPIENTS = 100
+MAX_ENCRYPTED_CHAT_DELIVERY_LENGTH = 64 * 1024
+MAX_ENCRYPTED_CHAT_BATCH_LENGTH = 1024 * 1024
+
 
 class SendTextMessageRequest(BaseModel):
     recipient_id: UUID
@@ -18,6 +22,43 @@ class SendTextMessageRequest(BaseModel):
     )
     ephemeral_public_key: str = Field(min_length=1)
     ephemeral_signature: str = Field(min_length=1)
+
+
+class ChatMessageDeliveryRequest(BaseModel):
+    recipient_id: UUID
+    message_id: UUID
+    message: str = Field(
+        min_length=1,
+        max_length=MAX_ENCRYPTED_CHAT_DELIVERY_LENGTH,
+    )
+
+
+class SendChatTextMessageRequest(BaseModel):
+    logical_message_id: UUID
+    content_type: Literal[MessageContentTypeEnum.TEXT] = MessageContentTypeEnum.TEXT
+    ephemeral_public_key: str = Field(min_length=1)
+    ephemeral_signature: str = Field(min_length=1)
+    deliveries: list[ChatMessageDeliveryRequest] = Field(
+        min_length=1,
+        max_length=MAX_CHAT_RECIPIENTS,
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_deliveries(self) -> "SendChatTextMessageRequest":
+        recipient_ids = [delivery.recipient_id for delivery in self.deliveries]
+        if len(recipient_ids) != len(set(recipient_ids)):
+            raise ValueError("Chat message recipient IDs must be unique")
+
+        message_ids = [delivery.message_id for delivery in self.deliveries]
+        if len(message_ids) != len(set(message_ids)):
+            raise ValueError("Chat message delivery IDs must be unique")
+
+        encrypted_payload_length = sum(
+            len(delivery.message.encode("utf-8")) for delivery in self.deliveries
+        )
+        if encrypted_payload_length > MAX_ENCRYPTED_CHAT_BATCH_LENGTH:
+            raise ValueError("Encrypted chat message batch is too large")
+        return self
 
 
 class MessageProcessingResult(BaseModel):
@@ -40,6 +81,7 @@ class MessageTextResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    logical_message_id: UUID
     sender_id: UUID
     recipient_id: UUID
     chat_id: UUID | None

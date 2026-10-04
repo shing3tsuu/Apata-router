@@ -46,6 +46,14 @@ class ChatParticipantNotFoundError(BaseAppError):
     pass
 
 
+class ChatMembershipConflictError(BaseAppError):
+    pass
+
+
+class ChatMessageConflictError(BaseAppError):
+    pass
+
+
 class ChatPermissionDeniedError(BaseAppError):
     pass
 

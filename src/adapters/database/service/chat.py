@@ -3,6 +3,7 @@ from uuid import UUID
 
 from src.adapters.database.dao.chat import ChatDAO
 from src.adapters.database.dao.common import CommonDAO, error_handler
+from src.adapters.database.dao.contact import ContactDAO
 from src.adapters.database.dao.user import UserDAO
 from src.adapters.database.dto import (
     ChatDTO,
@@ -12,6 +13,7 @@ from src.adapters.database.dto import (
     CreateChatDTO,
     CreateChatEventDTO,
     CreateChatParticipantDTO,
+    CreateContactDTO,
     UpdateChatDTO,
     UserDTO,
 )
@@ -30,10 +32,12 @@ class ChatService:
         self,
         chat_dao: ChatDAO,
         user_dao: UserDAO,
+        contact_dao: ContactDAO,
         common_dao: CommonDAO,
     ):
         self._chat_dao = chat_dao
         self._user_dao = user_dao
+        self._contact_dao = contact_dao
         self._common_dao = common_dao
 
     @error_handler
@@ -145,6 +149,17 @@ class ChatService:
                 target_user_id=user_id,
                 event_type=event_type,
             )
+        )
+        participants = await self._chat_dao.get_participants(chat_id)
+        await self._contact_dao.add_blank_contacts(
+            [
+                CreateContactDTO(
+                    sender_id=user_id,
+                    receiver_id=participant.user_id,
+                )
+                for participant in participants
+                if participant.user_id != user_id
+            ]
         )
         return ChatParticipantChangeDTO(participant=participant, event=event)
 

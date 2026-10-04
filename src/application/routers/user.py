@@ -32,6 +32,8 @@ from src.errors.error import InvalidAccessTokenTypeError, MissingAccessTokenSubj
 from ..models.user import (
     ChallengeLoginRequest,
     ChallengeRequest,
+    ECDHPublicKeyBatchRequest,
+    ECDHPublicKeyResponse,
     PublicKeyResponse,
     PublicKeyUpdateDTO,
     UserRegisterRequest,
@@ -380,6 +382,45 @@ class AuthAPI:
                 ecdh_public_key=ecdh_public_key,
                 ecdh_signature=user_data.ecdh_signature,
             )
+
+        @self.auth_router.post(
+            "/public-keys/ecdh/batch",
+            response_model=list[ECDHPublicKeyResponse],
+        )
+        @inject
+        async def get_ecdh_public_keys_batch(
+            request_data: ECDHPublicKeyBatchRequest,
+            user_service: FromDishka[UserService],
+            jwt_service: FromDishka[JWTService],
+            logger: FromDishka[logging.Logger],
+            token: str = Depends(self.oauth2_scheme),
+        ) -> list[ECDHPublicKeyResponse]:
+            await self.get_current_user(token, jwt_service, logger)
+            users = await user_service.get_users_by_id(request_data.user_ids)
+            users_by_id = {user.id: user for user in users}
+            missing_user_ids = set(request_data.user_ids) - set(users_by_id)
+            if missing_user_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Public keys not found",
+                )
+
+            responses: list[ECDHPublicKeyResponse] = []
+            for user_id in request_data.user_ids:
+                user = users_by_id[user_id]
+                if not user.ecdh_public_key or not user.ecdh_signature:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Public keys not found",
+                    )
+                responses.append(
+                    ECDHPublicKeyResponse(
+                        user_id=user.id,
+                        ecdh_public_key=user.ecdh_public_key,
+                        ecdh_signature=user.ecdh_signature,
+                    )
+                )
+            return responses
 
         @self.auth_router.put("/ecdsa-update-key", status_code=status.HTTP_200_OK)
         @inject

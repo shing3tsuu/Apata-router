@@ -1,7 +1,7 @@
 import re
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class UserCreateDTO(BaseModel):
@@ -55,6 +55,22 @@ class PublicKeyResponse(BaseModel):
     ed_public_key: str
     ecdh_public_key: str
     ecdh_signature: str | None
+
+
+class ECDHPublicKeyBatchRequest(BaseModel):
+    user_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_unique_user_ids(self) -> "ECDHPublicKeyBatchRequest":
+        if len(self.user_ids) != len(set(self.user_ids)):
+            raise ValueError("ECDH key user IDs must be unique")
+        return self
+
+
+class ECDHPublicKeyResponse(BaseModel):
+    user_id: UUID
+    ecdh_public_key: str
+    ecdh_signature: str
 
 
 class ChallengeLoginRequest(BaseModel):

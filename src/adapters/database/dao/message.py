@@ -45,6 +45,27 @@ class MessageDAO:
             for result in results
         ]
 
+    async def get_chat_messages_by_logical_id(
+        self,
+        sender_id: UUID,
+        chat_id: UUID,
+        logical_message_id: UUID,
+    ) -> list[MessageDTO]:
+        stmt = (
+            select(Message)
+            .where(
+                Message.sender_id == sender_id,
+                Message.chat_id == chat_id,
+                Message.logical_message_id == logical_message_id,
+            )
+            .order_by(Message.recipient_id)
+        )
+        results = await self._session.scalars(stmt)
+        return [
+            MessageDTO.model_validate(result, from_attributes=True)
+            for result in results
+        ]
+
     async def get_undelivered_messages(self, recipient_id: UUID) -> list[MessageDTO]:
         stmt = (
             select(Message)
@@ -92,6 +113,7 @@ class MessageDAO:
             .where(
                 Message.sender_id == sender_id,
                 Message.failed.is_(True),
+                Message.chat_id.is_(None),
             )
             .order_by(Message.timestamp, Message.id)
         )

@@ -109,11 +109,13 @@ class AppProvider(Provider):
         self,
         chat_dao: ChatDAO,
         user_dao: UserDAO,
+        contact_dao: ContactDAO,
         common_dao: CommonDAO,
     ) -> ChatService:
         return ChatService(
             chat_dao=chat_dao,
             user_dao=user_dao,
+            contact_dao=contact_dao,
             common_dao=common_dao,
         )
 

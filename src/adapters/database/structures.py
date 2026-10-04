@@ -10,6 +10,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy import Enum as SAEnum
@@ -307,6 +308,17 @@ class Message(Base):
         Index("ix_messages_recipient_delivered", "recipient_id", "is_delivered"),
         Index("ix_messages_sender_failed", "sender_id", "failed"),
         Index("ix_messages_chat_timestamp", "chat_id", "timestamp"),
+        Index(
+            "ix_messages_chat_logical_message",
+            "chat_id",
+            "logical_message_id",
+        ),
+        UniqueConstraint(
+            "sender_id",
+            "logical_message_id",
+            "recipient_id",
+            name="uq_messages_logical_recipient",
+        ),
         CheckConstraint(
             "(content IS NOT NULL) <> (file_content IS NOT NULL)",
             name="ck_messages_single_payload",
@@ -322,6 +334,7 @@ class Message(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    logical_message_id: Mapped[UUID] = mapped_column(index=True)
     sender_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     recipient_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
 

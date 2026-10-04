@@ -15,7 +15,12 @@ from src.adapters.database.dto import (
     MessageDTO,
     MessageProcessingResultDTO,
 )
-from src.errors.error import ChatNotFoundError, ChatParticipantNotFoundError
+from src.errors.error import (
+    ChatMembershipConflictError,
+    ChatMessageConflictError,
+    ChatNotFoundError,
+    ChatParticipantNotFoundError,
+)
 
 
 class MessageService:
@@ -70,31 +75,79 @@ class MessageService:
             raise ValueError("A chat message batch must contain one sender_id")
         sender_id = next(iter(sender_ids))
 
+        logical_message_ids = {message.logical_message_id for message in messages}
+        if len(logical_message_ids) != 1 or None in logical_message_ids:
+            raise ValueError("A chat message batch must contain one logical_message_id")
+        logical_message_id = next(iter(logical_message_ids))
+        assert logical_message_id is not None
+
         chat = await self._chat_dao.get_chat_by_id(chat_id)
         if chat is None:
             raise ChatNotFoundError("Chat not found", context={"chat_id": str(chat_id)})
 
         participants = await self._chat_dao.get_participants(chat_id)
         participant_ids = {participant.user_id for participant in participants}
-        message_user_ids = {
-            user_id
-            for message in messages
-            for user_id in (message.sender_id, message.recipient_id)
-        }
-        missing_participant_ids = message_user_ids - participant_ids
-        if missing_participant_ids:
+        if sender_id not in participant_ids:
             raise ChatParticipantNotFoundError(
-                "Every message sender and recipient must be a chat participant",
+                "The message sender must be an active chat participant",
                 context={
                     "chat_id": str(chat_id),
-                    "user_ids": sorted(
-                        str(user_id) for user_id in missing_participant_ids
+                    "user_id": str(sender_id),
+                },
+            )
+
+        submitted_recipient_ids = [message.recipient_id for message in messages]
+        if len(submitted_recipient_ids) != len(set(submitted_recipient_ids)):
+            raise ChatMembershipConflictError(
+                "Chat message recipients must be unique",
+                context={"chat_id": str(chat_id)},
+            )
+
+        expected_recipient_ids = participant_ids - {sender_id}
+        if set(submitted_recipient_ids) != expected_recipient_ids:
+            raise ChatMembershipConflictError(
+                "Chat membership changed while the message was being prepared",
+                context={
+                    "chat_id": str(chat_id),
+                    "expected_recipient_ids": sorted(
+                        str(user_id) for user_id in expected_recipient_ids
                     ),
                 },
             )
 
-        for recipient_id in {message.recipient_id for message in messages}:
-            await self._ensure_blank_contact(sender_id, recipient_id)
+        existing_messages = await self._message_dao.get_chat_messages_by_logical_id(
+            sender_id,
+            chat_id,
+            logical_message_id,
+        )
+        if existing_messages:
+            existing_by_id = {message.id: message for message in existing_messages}
+            if len(existing_by_id) != len(messages) or any(
+                (existing := existing_by_id.get(message.id)) is None
+                or existing.recipient_id != message.recipient_id
+                or existing.content != message.content
+                or existing.ephemeral_public_key != message.ephemeral_public_key
+                or existing.ephemeral_signature != message.ephemeral_signature
+                for message in messages
+            ):
+                raise ChatMessageConflictError(
+                    "Logical chat message ID is already used by another batch",
+                    context={
+                        "chat_id": str(chat_id),
+                        "logical_message_id": str(logical_message_id),
+                    },
+                )
+            return [existing_by_id[message.id] for message in messages]
+
+        await self._contact_dao.add_blank_contacts(
+            [
+                CreateContactDTO(
+                    sender_id=sender_id,
+                    receiver_id=recipient_id,
+                )
+                for recipient_id in submitted_recipient_ids
+            ]
+        )
 
         return await self._message_dao.add_chat_messages(messages)
 

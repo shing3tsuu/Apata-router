@@ -1,6 +1,8 @@
+from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import and_, delete, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.adapters.database.dto import ContactDTO, CreateContactDTO, UpdateContactDTO
@@ -16,6 +18,26 @@ class ContactDAO:
         result = await self._session.scalar(stmt)
         assert result is not None
         return ContactDTO.model_validate(result, from_attributes=True)
+
+    async def add_blank_contacts(
+        self,
+        contacts: Sequence[CreateContactDTO],
+    ) -> list[ContactDTO]:
+        """Insert missing blank relationships in one conflict-safe statement."""
+        if not contacts:
+            return []
+
+        stmt = (
+            pg_insert(Contact)
+            .values([contact.model_dump() for contact in contacts])
+            .on_conflict_do_nothing()
+            .returning(Contact)
+        )
+        results = await self._session.scalars(stmt)
+        return [
+            ContactDTO.model_validate(result, from_attributes=True)
+            for result in results
+        ]
 
     async def get_contacts_by_user_id(
         self,

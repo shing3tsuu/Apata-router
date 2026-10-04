@@ -60,6 +60,22 @@ async def test_get_contact_request_returns_none_when_absent() -> None:
     assert contact is None
 
 
+async def test_add_blank_contacts_uses_one_conflict_safe_statement() -> None:
+    session = AsyncMock()
+    contacts = [
+        CreateContactDTO(sender_id=uuid4(), receiver_id=uuid4()),
+        CreateContactDTO(sender_id=uuid4(), receiver_id=uuid4()),
+    ]
+    session.scalars.return_value = []
+
+    result = await ContactDAO(session).add_blank_contacts(contacts)
+
+    assert result == []
+    session.scalars.assert_awaited_once()
+    statement = session.scalars.await_args.args[0]
+    assert "ON CONFLICT DO NOTHING" in str(statement)
+
+
 async def test_global_user_search_has_no_result_limit() -> None:
     session = AsyncMock()
     session.scalars.return_value = []

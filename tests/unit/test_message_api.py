@@ -8,8 +8,10 @@ from pydantic import ValidationError
 from src.adapters.database.dto import MessageDTO
 from src.adapters.database.structures import MessageContentMimeTypeEnum
 from src.application.models.message import (
+    MAX_ENCRYPTED_CHAT_BATCH_LENGTH,
     AcknowledgeMessagesRequest,
     MessageTextResponse,
+    SendChatTextMessageRequest,
 )
 from src.application.routers.message import MessageAPI
 
@@ -58,5 +60,72 @@ def test_acknowledgement_requires_unique_message_ids() -> None:
                     {"message_id": message_id, "failed": False},
                     {"message_id": message_id, "failed": True},
                 ]
+            }
+        )
+
+
+def test_chat_batch_requires_unique_recipients_and_delivery_ids() -> None:
+    recipient_id = uuid4()
+    message_id = uuid4()
+    base_request = {
+        "logical_message_id": uuid4(),
+        "ephemeral_public_key": "ephemeral-public-key",
+        "ephemeral_signature": "ephemeral-signature",
+    }
+
+    with pytest.raises(ValidationError, match="recipient IDs must be unique"):
+        SendChatTextMessageRequest.model_validate(
+            {
+                **base_request,
+                "deliveries": [
+                    {
+                        "recipient_id": recipient_id,
+                        "message_id": message_id,
+                        "message": "ciphertext-one",
+                    },
+                    {
+                        "recipient_id": recipient_id,
+                        "message_id": uuid4(),
+                        "message": "ciphertext-two",
+                    },
+                ],
+            }
+        )
+
+    with pytest.raises(ValidationError, match="delivery IDs must be unique"):
+        SendChatTextMessageRequest.model_validate(
+            {
+                **base_request,
+                "deliveries": [
+                    {
+                        "recipient_id": uuid4(),
+                        "message_id": message_id,
+                        "message": "ciphertext-one",
+                    },
+                    {
+                        "recipient_id": uuid4(),
+                        "message_id": message_id,
+                        "message": "ciphertext-two",
+                    },
+                ],
+            }
+        )
+
+
+def test_chat_batch_rejects_an_oversized_encrypted_payload() -> None:
+    with pytest.raises(ValidationError, match="batch is too large"):
+        SendChatTextMessageRequest.model_validate(
+            {
+                "logical_message_id": uuid4(),
+                "ephemeral_public_key": "ephemeral-public-key",
+                "ephemeral_signature": "ephemeral-signature",
+                "deliveries": [
+                    {
+                        "recipient_id": uuid4(),
+                        "message_id": uuid4(),
+                        "message": "x" * (MAX_ENCRYPTED_CHAT_BATCH_LENGTH // 32 + 1),
+                    }
+                    for _ in range(32)
+                ],
             }
         )

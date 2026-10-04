@@ -131,3 +131,5 @@ async def test_get_failed_messages_reads_sender_outbox() -> None:
     assert [item.id for item in result] == [message.id]
     assert result[0].failed is True
     session.scalars.assert_awaited_once()
+    statement = session.scalars.await_args.args[0]
+    assert "messages.chat_id IS NULL" in str(statement)

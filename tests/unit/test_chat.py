@@ -6,6 +6,7 @@ import pytest
 
 from src.adapters.database.dao.chat import ChatDAO
 from src.adapters.database.dao.common import CommonDAO
+from src.adapters.database.dao.contact import ContactDAO
 from src.adapters.database.dao.user import UserDAO
 from src.adapters.database.dto import (
     ChatDTO,
@@ -69,18 +70,28 @@ def _event(
     )
 
 
-def _service() -> tuple[ChatService, AsyncMock, AsyncMock, AsyncMock]:
+def _service() -> tuple[
+    ChatService,
+    AsyncMock,
+    AsyncMock,
+    AsyncMock,
+    AsyncMock,
+]:
     chat_dao = AsyncMock(spec=ChatDAO)
     user_dao = AsyncMock(spec=UserDAO)
+    contact_dao = AsyncMock(spec=ContactDAO)
     common_dao = AsyncMock(spec=CommonDAO)
+    chat_dao.get_participants.return_value = []
     return (
         ChatService(
             chat_dao=chat_dao,
             user_dao=user_dao,
+            contact_dao=contact_dao,
             common_dao=common_dao,
         ),
         chat_dao,
         user_dao,
+        contact_dao,
         common_dao,
     )
 
@@ -88,7 +99,7 @@ def _service() -> tuple[ChatService, AsyncMock, AsyncMock, AsyncMock]:
 async def test_create_chat_adds_owner_and_creation_event() -> None:
     owner_id = uuid4()
     chat_id = uuid4()
-    service, chat_dao, user_dao, common_dao = _service()
+    service, chat_dao, user_dao, _, common_dao = _service()
     user_dao.get_user_by_id.return_value = _user(owner_id)
     chat_dao.create_chat.return_value = _chat(chat_id, owner_id)
 
@@ -109,7 +120,7 @@ async def test_get_events_forwards_exclusive_after_timestamp() -> None:
     requester_id = uuid4()
     chat_id = uuid4()
     after = datetime.now(UTC)
-    service, chat_dao, _, _ = _service()
+    service, chat_dao, _, _, _ = _service()
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, requester_id)
     chat_dao.get_participant.return_value = _participant(chat_id, requester_id)
     chat_dao.get_events.return_value = []
@@ -129,7 +140,7 @@ async def test_former_participant_reads_history_only_until_left_at() -> None:
     chat_id = uuid4()
     after = datetime.now(UTC)
     left_at = datetime.now(UTC)
-    service, chat_dao, _, _ = _service()
+    service, chat_dao, _, _, _ = _service()
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, requester_id)
     participant = _participant(chat_id, requester_id)
     participant.left_at = left_at
@@ -155,7 +166,7 @@ async def test_participant_can_invite_another_user_and_event_is_written() -> Non
     owner_id = uuid4()
     invited_user_id = uuid4()
     chat_id = uuid4()
-    service, chat_dao, user_dao, common_dao = _service()
+    service, chat_dao, user_dao, contact_dao, common_dao = _service()
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, owner_id)
     chat_dao.get_participant.side_effect = [
         _participant(chat_id, owner_id),
@@ -173,6 +184,10 @@ async def test_participant_can_invite_another_user_and_event_is_written() -> Non
         ChatEventTypeEnum.MEMBER_ADDED,
         invited_user_id,
     )
+    chat_dao.get_participants.return_value = [
+        _participant(chat_id, owner_id),
+        _participant(chat_id, invited_user_id, owner_id),
+    ]
 
     change = await service.add_participant(chat_id, owner_id, invited_user_id)
 
@@ -182,6 +197,12 @@ async def test_participant_can_invite_another_user_and_event_is_written() -> Non
     assert creation.invited_by_user_id == owner_id
     assert event.event_type is ChatEventTypeEnum.MEMBER_ADDED
     assert event.target_user_id == invited_user_id
+    contact_dao.add_blank_contacts.assert_awaited_once()
+    blank_contact = contact_dao.add_blank_contacts.await_args.args[0][0]
+    assert {blank_contact.sender_id, blank_contact.receiver_id} == {
+        owner_id,
+        invited_user_id,
+    }
     common_dao.commit.assert_awaited_once()
 
 
@@ -189,7 +210,7 @@ async def test_former_participant_is_restored_with_joined_event() -> None:
     owner_id = uuid4()
     returning_user_id = uuid4()
     chat_id = uuid4()
-    service, chat_dao, user_dao, common_dao = _service()
+    service, chat_dao, user_dao, contact_dao, common_dao = _service()
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, owner_id)
     former_participant = _participant(chat_id, returning_user_id, owner_id)
     former_participant.left_at = datetime.now(UTC)
@@ -209,12 +230,17 @@ async def test_former_participant_is_restored_with_joined_event() -> None:
         ChatEventTypeEnum.MEMBER_JOINED,
         returning_user_id,
     )
+    chat_dao.get_participants.return_value = [
+        _participant(chat_id, owner_id),
+        _participant(chat_id, returning_user_id, owner_id),
+    ]
 
     change = await service.add_participant(chat_id, owner_id, returning_user_id)
 
     assert change.event.event_type is ChatEventTypeEnum.MEMBER_JOINED
     chat_dao.restore_participant.assert_awaited_once()
     chat_dao.add_participant.assert_not_awaited()
+    contact_dao.add_blank_contacts.assert_awaited_once()
     common_dao.commit.assert_awaited_once()
 
 
@@ -223,7 +249,7 @@ async def test_inviter_can_remove_the_user_they_invited() -> None:
     inviter_id = uuid4()
     invited_user_id = uuid4()
     chat_id = uuid4()
-    service, chat_dao, _, common_dao = _service()
+    service, chat_dao, _, _, common_dao = _service()
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, owner_id)
     chat_dao.get_participant.side_effect = [
         _participant(chat_id, inviter_id),
@@ -253,7 +279,7 @@ async def test_unrelated_member_cannot_remove_a_participant() -> None:
     inviter_id = uuid4()
     invited_user_id = uuid4()
     chat_id = uuid4()
-    service, chat_dao, _, common_dao = _service()
+    service, chat_dao, _, _, common_dao = _service()
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, owner_id)
     chat_dao.get_participant.side_effect = [
         _participant(chat_id, actor_id),
@@ -272,7 +298,7 @@ async def test_only_owner_can_delete_chat() -> None:
     owner_id = uuid4()
     other_user_id = uuid4()
     chat_id = uuid4()
-    service, chat_dao, _, _ = _service()
+    service, chat_dao, _, _, _ = _service()
     chat_dao.get_chat_by_id.return_value = _chat(chat_id, owner_id)
 
     with pytest.raises(ChatPermissionDeniedError, match="Only the chat owner"):
