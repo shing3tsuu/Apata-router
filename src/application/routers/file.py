@@ -6,9 +6,10 @@ from dishka import FromDishka
 from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Response, status
 
-from src.adapters.database.dto import CreateFileTransferDTO
+from src.adapters.database.dto import CreateFileTransferDTO, FileTransferDTO
 from src.adapters.database.service.file import FileService
 from src.adapters.encryption.service.jwt import JWTService
+from src.adapters.realtime import RealtimePublisher
 from src.application.models.file import (
     AcknowledgeFilesRequest,
     AcknowledgeFilesResponse,
@@ -61,6 +62,27 @@ def _raise_file_http_error(error: BaseAppError) -> NoReturn:
         status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
 
     raise HTTPException(status_code=status_code, detail=error.message) from error
+
+
+async def _complete_upload_and_notify(
+    *,
+    file_service: FileService,
+    realtime_publisher: RealtimePublisher,
+    upload_id: UUID,
+    sender_id: UUID,
+) -> FileTransferDTO:
+    transfer = await file_service.complete_upload(upload_id, sender_id)
+    await realtime_publisher.publish(
+        "message_available",
+        [transfer.recipient_id],
+        {
+            "message_id": str(transfer.message_id),
+            "file_id": str(transfer.file_id),
+            "sender_id": str(transfer.sender_id),
+            "chat_id": str(transfer.chat_id) if transfer.chat_id is not None else None,
+        },
+    )
+    return transfer
 
 
 class FileAPI:
@@ -184,6 +206,7 @@ class FileAPI:
             auth_api: FromDishka[AuthAPI],
             jwt_service: FromDishka[JWTService],
             file_service: FromDishka[FileService],
+            realtime_publisher: FromDishka[RealtimePublisher],
             logger: FromDishka[logging.Logger],
             token: str = Depends(AuthAPI.oauth2_scheme),
         ) -> CompleteFileUploadResponse:
@@ -191,8 +214,11 @@ class FileAPI:
                 token, jwt_service, logger
             )
             try:
-                transfer = await file_service.complete_upload(
-                    upload_id, current_user_id
+                transfer = await _complete_upload_and_notify(
+                    file_service=file_service,
+                    realtime_publisher=realtime_publisher,
+                    upload_id=upload_id,
+                    sender_id=current_user_id,
                 )
             except BaseAppError as error:
                 _raise_file_http_error(error)

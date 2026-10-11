@@ -17,6 +17,7 @@ from src.adapters.realtime import RealtimePublisher
 from src.application.models.message import (
     AcknowledgeMessagesRequest,
     AcknowledgeMessagesResponse,
+    ChatReplyTargetResponse,
     FailedMessageResponse,
     FailedMessagesResponse,
     MessageTextResponse,
@@ -29,6 +30,8 @@ from src.errors.error import (
     ChatMessageConflictError,
     ChatNotFoundError,
     ChatParticipantNotFoundError,
+    MessageReplyAccessDeniedError,
+    MessageReplyNotFoundError,
 )
 
 from .user import AuthAPI
@@ -63,7 +66,11 @@ class MessageAPI:
             )
             message = CreateMessageTextDTO(
                 id=request_data.message_id,
-                logical_message_id=request_data.message_id,
+                general_message_uuid=(
+                    request_data.message_id
+                    if request_data.chat_id is not None
+                    else None
+                ),
                 sender_id=current_user_id,
                 recipient_id=request_data.recipient_id,
                 chat_id=request_data.chat_id,
@@ -75,7 +82,26 @@ class MessageAPI:
             )
 
             if request_data.chat_id is None:
-                saved_message = await message_service.add_text_message(message)
+                try:
+                    saved_message = await message_service.add_text_message(message)
+                except MessageReplyNotFoundError as error:
+                    return JSONResponse(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        content={
+                            "code": "reply_target_not_found",
+                            "detail": error.message,
+                            "status_code": status.HTTP_404_NOT_FOUND,
+                        },
+                    )
+                except MessageReplyAccessDeniedError as error:
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={
+                            "code": "reply_target_forbidden",
+                            "detail": error.message,
+                            "status_code": status.HTTP_403_FORBIDDEN,
+                        },
+                    )
             else:
                 try:
                     saved_message = (
@@ -122,6 +148,55 @@ class MessageAPI:
             )
             return MessageTextResponse.model_validate(saved_message)
 
+        @self._message_router.get(
+            "/chats/{chat_id}/messages/{general_message_uuid}/reply-targets",
+            response_model=list[ChatReplyTargetResponse],
+        )
+        @inject
+        async def get_chat_reply_targets(
+            chat_id: UUID,
+            general_message_uuid: UUID,
+            auth_api: FromDishka[AuthAPI],
+            jwt_service: FromDishka[JWTService],
+            message_service: FromDishka[MessageService],
+            logger: FromDishka[logging.Logger],
+            token: str = Depends(AuthAPI.oauth2_scheme),
+        ) -> list[ChatReplyTargetResponse] | JSONResponse:
+            current_user_id = await auth_api.get_current_user(
+                token, jwt_service, logger
+            )
+            try:
+                targets = await message_service.get_chat_reply_targets(
+                    chat_id,
+                    general_message_uuid,
+                    current_user_id,
+                )
+            except (ChatNotFoundError, MessageReplyNotFoundError) as error:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={
+                        "code": "chat_reply_target_not_found",
+                        "detail": error.message,
+                        "status_code": status.HTTP_404_NOT_FOUND,
+                    },
+                )
+            except ChatParticipantNotFoundError as error:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={
+                        "code": "chat_participant_forbidden",
+                        "detail": error.message,
+                        "status_code": status.HTTP_403_FORBIDDEN,
+                    },
+                )
+            return [
+                ChatReplyTargetResponse(
+                    user_id=target.recipient_id,
+                    message_id=target.id,
+                )
+                for target in targets
+            ]
+
         @self._message_router.post(
             "/chats/{chat_id}/messages",
             response_model=list[MessageTextResponse],
@@ -145,10 +220,14 @@ class MessageAPI:
             messages = [
                 CreateMessageTextDTO(
                     id=delivery.message_id,
-                    logical_message_id=request_data.logical_message_id,
+                    general_message_uuid=request_data.general_message_uuid,
                     sender_id=current_user_id,
                     recipient_id=delivery.recipient_id,
                     chat_id=chat_id,
+                    reply_to_id=delivery.reply_to_id,
+                    reply_to_general_message_uuid=(
+                        request_data.reply_to_general_message_uuid
+                    ),
                     content_type=request_data.content_type,
                     content=delivery.message,
                     timestamp=timestamp,
@@ -175,6 +254,24 @@ class MessageAPI:
                     content={
                         "code": "chat_participant_forbidden",
                         "detail": "Chat participant access is forbidden",
+                        "status_code": status.HTTP_403_FORBIDDEN,
+                    },
+                )
+            except MessageReplyNotFoundError as error:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={
+                        "code": "chat_reply_target_not_found",
+                        "detail": error.message,
+                        "status_code": status.HTTP_404_NOT_FOUND,
+                    },
+                )
+            except MessageReplyAccessDeniedError as error:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={
+                        "code": "chat_reply_target_forbidden",
+                        "detail": error.message,
                         "status_code": status.HTTP_403_FORBIDDEN,
                     },
                 )

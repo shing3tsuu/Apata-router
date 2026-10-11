@@ -20,6 +20,8 @@ from src.errors.error import (
     ChatMessageConflictError,
     ChatNotFoundError,
     ChatParticipantNotFoundError,
+    MessageReplyAccessDeniedError,
+    MessageReplyNotFoundError,
 )
 
 
@@ -38,6 +40,23 @@ class MessageService:
 
     @error_handler
     async def add_text_message(self, message: CreateMessageTextDTO) -> MessageDTO:
+        if message.reply_to_id is not None:
+            reply_target = await self._message_dao.get_message_by_id(
+                message.reply_to_id
+            )
+            if reply_target is None:
+                raise MessageReplyNotFoundError(
+                    "Reply target message not found",
+                    context={"reply_to_id": str(message.reply_to_id)},
+                )
+            if reply_target.chat_id is not None or {
+                reply_target.sender_id,
+                reply_target.recipient_id,
+            } != {message.sender_id, message.recipient_id}:
+                raise MessageReplyAccessDeniedError(
+                    "Reply target does not belong to the direct conversation",
+                    context={"reply_to_id": str(message.reply_to_id)},
+                )
         await self._ensure_blank_contact(message.sender_id, message.recipient_id)
         return await self._message_dao.add_text_message(message)
 
@@ -59,6 +78,35 @@ class MessageService:
     async def get_failed_messages(self, sender_id: UUID) -> list[MessageDTO]:
         return await self._message_dao.get_failed_messages(sender_id)
 
+    async def get_chat_reply_targets(
+        self,
+        chat_id: UUID,
+        general_message_uuid: UUID,
+        requester_id: UUID,
+    ) -> list[MessageDTO]:
+        chat = await self._chat_dao.get_chat_by_id(chat_id)
+        if chat is None:
+            raise ChatNotFoundError("Chat not found", context={"chat_id": str(chat_id)})
+        participant = await self._chat_dao.get_participant(chat_id, requester_id)
+        if participant is None or participant.left_at is not None:
+            raise ChatParticipantNotFoundError(
+                "User is not an active chat participant",
+                context={"chat_id": str(chat_id), "user_id": str(requester_id)},
+            )
+        targets = await self._message_dao.get_chat_reply_targets(
+            chat_id,
+            general_message_uuid,
+        )
+        if not targets:
+            raise MessageReplyNotFoundError(
+                "Chat reply target not found",
+                context={
+                    "chat_id": str(chat_id),
+                    "general_message_uuid": str(general_message_uuid),
+                },
+            )
+        return targets
+
     @error_handler
     async def add_chat_messages(
         self, messages: Sequence[CreateMessagePayloadDTO]
@@ -75,11 +123,13 @@ class MessageService:
             raise ValueError("A chat message batch must contain one sender_id")
         sender_id = next(iter(sender_ids))
 
-        logical_message_ids = {message.logical_message_id for message in messages}
-        if len(logical_message_ids) != 1 or None in logical_message_ids:
-            raise ValueError("A chat message batch must contain one logical_message_id")
-        logical_message_id = next(iter(logical_message_ids))
-        assert logical_message_id is not None
+        general_message_uuids = {message.general_message_uuid for message in messages}
+        if len(general_message_uuids) != 1 or None in general_message_uuids:
+            raise ValueError(
+                "A chat message batch must contain one general_message_uuid"
+            )
+        general_message_uuid = next(iter(general_message_uuids))
+        assert general_message_uuid is not None
 
         chat = await self._chat_dao.get_chat_by_id(chat_id)
         if chat is None:
@@ -115,10 +165,68 @@ class MessageService:
                 },
             )
 
-        existing_messages = await self._message_dao.get_chat_messages_by_logical_id(
+        reply_general_uuids = {
+            message.reply_to_general_message_uuid for message in messages
+        }
+        if len(reply_general_uuids) != 1:
+            raise ValueError(
+                "A chat message batch must contain one reply target identity"
+            )
+        reply_general_message_uuid = next(iter(reply_general_uuids))
+        if reply_general_message_uuid is None:
+            if any(message.reply_to_id is not None for message in messages):
+                raise MessageReplyAccessDeniedError(
+                    "Chat reply target identity is missing"
+                )
+        else:
+            reply_targets = await self._message_dao.get_chat_reply_targets(
+                chat_id,
+                reply_general_message_uuid,
+            )
+            if not reply_targets:
+                raise MessageReplyNotFoundError(
+                    "Chat reply target not found",
+                    context={
+                        "chat_id": str(chat_id),
+                        "general_message_uuid": str(reply_general_message_uuid),
+                    },
+                )
+            target_by_id = {target.id: target for target in reply_targets}
+            historical_recipient_ids = {target.recipient_id for target in reply_targets}
+            original_sender_ids = {target.sender_id for target in reply_targets}
+            if len(original_sender_ids) != 1:
+                raise MessageReplyAccessDeniedError(
+                    "Chat reply target batch has inconsistent senders"
+                )
+            original_sender_id = next(iter(original_sender_ids))
+            for message in messages:
+                if message.reply_to_id is None:
+                    if (
+                        message.recipient_id in historical_recipient_ids
+                        and message.recipient_id != original_sender_id
+                    ):
+                        raise MessageReplyAccessDeniedError(
+                            "Recipient-specific chat reply target is missing",
+                            context={
+                                "recipient_id": str(message.recipient_id),
+                                "general_message_uuid": str(reply_general_message_uuid),
+                            },
+                        )
+                    continue
+                target = target_by_id.get(message.reply_to_id)
+                if target is None or target.recipient_id != message.recipient_id:
+                    raise MessageReplyAccessDeniedError(
+                        "Chat reply target does not belong to the recipient",
+                        context={
+                            "recipient_id": str(message.recipient_id),
+                            "reply_to_id": str(message.reply_to_id),
+                        },
+                    )
+
+        existing_messages = await self._message_dao.get_chat_messages_by_general_uuid(
             sender_id,
             chat_id,
-            logical_message_id,
+            general_message_uuid,
         )
         if existing_messages:
             existing_by_id = {message.id: message for message in existing_messages}
@@ -128,13 +236,16 @@ class MessageService:
                 or existing.content != message.content
                 or existing.ephemeral_public_key != message.ephemeral_public_key
                 or existing.ephemeral_signature != message.ephemeral_signature
+                or existing.reply_to_id != message.reply_to_id
+                or existing.reply_to_general_message_uuid
+                != message.reply_to_general_message_uuid
                 for message in messages
             ):
                 raise ChatMessageConflictError(
-                    "Logical chat message ID is already used by another batch",
+                    "General chat message UUID is already used by another batch",
                     context={
                         "chat_id": str(chat_id),
-                        "logical_message_id": str(logical_message_id),
+                        "general_message_uuid": str(general_message_uuid),
                     },
                 )
             return [existing_by_id[message.id] for message in messages]

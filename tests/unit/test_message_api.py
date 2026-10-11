@@ -46,6 +46,7 @@ def test_text_message_response_uses_legacy_message_field_name() -> None:
     response = MessageTextResponse.model_validate(message)
 
     assert response.message == "encrypted-text"
+    assert response.general_message_uuid is None
     assert response.failed is None
     assert "content" not in response.model_dump()
 
@@ -68,7 +69,7 @@ def test_chat_batch_requires_unique_recipients_and_delivery_ids() -> None:
     recipient_id = uuid4()
     message_id = uuid4()
     base_request = {
-        "logical_message_id": uuid4(),
+        "general_message_uuid": uuid4(),
         "ephemeral_public_key": "ephemeral-public-key",
         "ephemeral_signature": "ephemeral-signature",
     }
@@ -116,7 +117,7 @@ def test_chat_batch_rejects_an_oversized_encrypted_payload() -> None:
     with pytest.raises(ValidationError, match="batch is too large"):
         SendChatTextMessageRequest.model_validate(
             {
-                "logical_message_id": uuid4(),
+                "general_message_uuid": uuid4(),
                 "ephemeral_public_key": "ephemeral-public-key",
                 "ephemeral_signature": "ephemeral-signature",
                 "deliveries": [
@@ -126,6 +127,28 @@ def test_chat_batch_rejects_an_oversized_encrypted_payload() -> None:
                         "message": "x" * (MAX_ENCRYPTED_CHAT_BATCH_LENGTH // 32 + 1),
                     }
                     for _ in range(32)
+                ],
+            }
+        )
+
+
+def test_chat_batch_requires_general_identity_for_physical_reply_target() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="require reply_to_general_message_uuid",
+    ):
+        SendChatTextMessageRequest.model_validate(
+            {
+                "general_message_uuid": uuid4(),
+                "ephemeral_public_key": "ephemeral-public-key",
+                "ephemeral_signature": "ephemeral-signature",
+                "deliveries": [
+                    {
+                        "recipient_id": uuid4(),
+                        "message_id": uuid4(),
+                        "reply_to_id": uuid4(),
+                        "message": "encrypted-message",
+                    }
                 ],
             }
         )

@@ -6,6 +6,7 @@ import pytest
 
 from src.adapters.database.dao.chat import ChatDAO
 from src.adapters.database.dao.common import CommonDAO
+from src.adapters.database.dao.contact import ContactDAO
 from src.adapters.database.dao.file import FileDAO
 from src.adapters.database.dao.user import UserDAO
 from src.adapters.database.dto import FileTransferDTO
@@ -44,19 +45,22 @@ def _transfer(
     )
 
 
-def _service() -> tuple[FileService, AsyncMock, AsyncMock]:
+def _service() -> tuple[FileService, AsyncMock, AsyncMock, AsyncMock]:
     file_dao = AsyncMock(spec=FileDAO)
     chat_dao = AsyncMock(spec=ChatDAO)
+    contact_dao = AsyncMock(spec=ContactDAO)
     user_dao = AsyncMock(spec=UserDAO)
     common_dao = AsyncMock(spec=CommonDAO)
     return (
         FileService(
             file_dao=file_dao,
             chat_dao=chat_dao,
+            contact_dao=contact_dao,
             user_dao=user_dao,
             common_dao=common_dao,
         ),
         file_dao,
+        contact_dao,
         common_dao,
     )
 
@@ -64,7 +68,7 @@ def _service() -> tuple[FileService, AsyncMock, AsyncMock]:
 async def test_append_chunk_persists_once_and_advances_offset() -> None:
     sender_id = uuid4()
     transfer = _transfer(sender_id=sender_id, total_size=3, chunk_size=3)
-    service, file_dao, common_dao = _service()
+    service, file_dao, _, common_dao = _service()
     file_dao.get_transfer_by_upload_id.return_value = transfer
     file_dao.append_chunk.return_value = 3
 
@@ -88,7 +92,7 @@ async def test_append_chunk_persists_once_and_advances_offset() -> None:
 async def test_append_chunk_rejects_stale_offset_before_database_write() -> None:
     sender_id = uuid4()
     transfer = _transfer(sender_id=sender_id, offset=3, total_size=6, chunk_size=3)
-    service, file_dao, common_dao = _service()
+    service, file_dao, _, common_dao = _service()
     file_dao.get_transfer_by_upload_id.return_value = transfer
 
     with pytest.raises(FileTransferOffsetConflictError, match="does not match"):
@@ -104,10 +108,49 @@ async def test_append_chunk_rejects_stale_offset_before_database_write() -> None
 
 
 async def test_create_upload_rejects_non_uuidv7_file_id() -> None:
-    service, _, common_dao = _service()
+    service, _, _, common_dao = _service()
     transfer = _transfer(file_id=uuid4())
 
     with pytest.raises(FileTransferValidationError, match="UUIDv7"):
         await service.create_upload(transfer)
 
     common_dao.commit.assert_not_awaited()
+
+
+async def test_complete_direct_upload_creates_missing_blank_contact() -> None:
+    sender_id = uuid4()
+    transfer = _transfer(sender_id=sender_id, offset=10, total_size=10)
+    completed = transfer.model_copy(update={"status": FileTransferStatusEnum.COMPLETED})
+    service, file_dao, contact_dao, common_dao = _service()
+    file_dao.get_transfer_by_upload_id.return_value = transfer
+    file_dao.complete_transfer.return_value = completed
+    contact_dao.get_contact_between_users.return_value = None
+
+    result = await service.complete_upload(transfer.upload_id, sender_id)
+
+    assert result == completed
+    contact_dao.get_contact_between_users.assert_awaited_once_with(
+        first_user_id=sender_id,
+        second_user_id=transfer.recipient_id,
+    )
+    contact_dao.add_blank_contacts.assert_awaited_once()
+    created_contact = contact_dao.add_blank_contacts.await_args.args[0][0]
+    assert created_contact.sender_id == sender_id
+    assert created_contact.receiver_id == transfer.recipient_id
+    common_dao.commit.assert_awaited_once()
+
+
+async def test_complete_direct_upload_preserves_existing_contact() -> None:
+    sender_id = uuid4()
+    transfer = _transfer(sender_id=sender_id, offset=10, total_size=10)
+    completed = transfer.model_copy(update={"status": FileTransferStatusEnum.COMPLETED})
+    service, file_dao, contact_dao, common_dao = _service()
+    file_dao.get_transfer_by_upload_id.return_value = transfer
+    file_dao.complete_transfer.return_value = completed
+    contact_dao.get_contact_between_users.return_value = object()
+
+    result = await service.complete_upload(transfer.upload_id, sender_id)
+
+    assert result == completed
+    contact_dao.add_blank_contacts.assert_not_awaited()
+    common_dao.commit.assert_awaited_once()

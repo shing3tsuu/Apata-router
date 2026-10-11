@@ -27,6 +27,7 @@ class SendTextMessageRequest(BaseModel):
 class ChatMessageDeliveryRequest(BaseModel):
     recipient_id: UUID
     message_id: UUID
+    reply_to_id: UUID | None = None
     message: str = Field(
         min_length=1,
         max_length=MAX_ENCRYPTED_CHAT_DELIVERY_LENGTH,
@@ -34,7 +35,8 @@ class ChatMessageDeliveryRequest(BaseModel):
 
 
 class SendChatTextMessageRequest(BaseModel):
-    logical_message_id: UUID
+    general_message_uuid: UUID
+    reply_to_general_message_uuid: UUID | None = None
     content_type: Literal[MessageContentTypeEnum.TEXT] = MessageContentTypeEnum.TEXT
     ephemeral_public_key: str = Field(min_length=1)
     ephemeral_signature: str = Field(min_length=1)
@@ -45,6 +47,12 @@ class SendChatTextMessageRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_unique_deliveries(self) -> "SendChatTextMessageRequest":
+        if self.reply_to_general_message_uuid is None and any(
+            delivery.reply_to_id is not None for delivery in self.deliveries
+        ):
+            raise ValueError(
+                "Chat reply deliveries require reply_to_general_message_uuid"
+            )
         recipient_ids = [delivery.recipient_id for delivery in self.deliveries]
         if len(recipient_ids) != len(set(recipient_ids)):
             raise ValueError("Chat message recipient IDs must be unique")
@@ -59,6 +67,11 @@ class SendChatTextMessageRequest(BaseModel):
         if encrypted_payload_length > MAX_ENCRYPTED_CHAT_BATCH_LENGTH:
             raise ValueError("Encrypted chat message batch is too large")
         return self
+
+
+class ChatReplyTargetResponse(BaseModel):
+    user_id: UUID
+    message_id: UUID
 
 
 class MessageProcessingResult(BaseModel):
@@ -81,11 +94,12 @@ class MessageTextResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    logical_message_id: UUID
+    general_message_uuid: UUID | None
     sender_id: UUID
     recipient_id: UUID
     chat_id: UUID | None
     reply_to_id: UUID | None
+    reply_to_general_message_uuid: UUID | None
     content_type: MessageContentTypeEnum
     message: str = Field(validation_alias="content")
     timestamp: datetime

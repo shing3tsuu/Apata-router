@@ -15,22 +15,32 @@ from src.adapters.database.structures import (
 )
 
 
-def _text_message(*, chat_id: UUID | None = None) -> CreateMessageTextDTO:
+def _text_message(
+    *,
+    chat_id: UUID | None = None,
+    general_message_uuid: UUID | None = None,
+) -> CreateMessageTextDTO:
     return CreateMessageTextDTO(
         sender_id=uuid4(),
         recipient_id=uuid4(),
         chat_id=chat_id,
+        general_message_uuid=general_message_uuid,
         content="encrypted-text",
         ephemeral_public_key="ephemeral-key",
         ephemeral_signature="ephemeral-signature",
     )
 
 
-def _file_message(*, chat_id: UUID | None = None) -> CreateMessageFileDTO:
+def _file_message(
+    *,
+    chat_id: UUID | None = None,
+    general_message_uuid: UUID | None = None,
+) -> CreateMessageFileDTO:
     return CreateMessageFileDTO(
         sender_id=uuid4(),
         recipient_id=uuid4(),
         chat_id=chat_id,
+        general_message_uuid=general_message_uuid,
         content_type=MessageContentTypeEnum.IMAGE,
         file_name="encrypted-photo",
         file_content=b"encrypted-file",
@@ -67,9 +77,16 @@ async def test_add_file_message_uses_single_returning_insert() -> None:
 async def test_add_chat_messages_inserts_fan_out_batch_with_one_database_call() -> None:
     session = AsyncMock(spec=AsyncSession)
     chat_id = uuid4()
+    general_message_uuid = uuid4()
     messages: list[CreateMessageTextDTO | CreateMessageFileDTO] = [
-        _text_message(chat_id=chat_id),
-        _file_message(chat_id=chat_id),
+        _text_message(
+            chat_id=chat_id,
+            general_message_uuid=general_message_uuid,
+        ),
+        _file_message(
+            chat_id=chat_id,
+            general_message_uuid=general_message_uuid,
+        ),
     ]
     session.scalars.return_value = messages
 
@@ -89,6 +106,18 @@ async def test_get_undelivered_messages_reads_recipient_inbox() -> None:
 
     assert [item.id for item in result] == [message.id]
     session.scalars.assert_awaited_once()
+
+
+async def test_get_message_by_id_returns_reply_target() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    message = _text_message()
+    session.scalar.return_value = message
+
+    result = await MessageDAO(session).get_message_by_id(message.id)
+
+    assert result is not None
+    assert result.id == message.id
+    session.scalar.assert_awaited_once()
 
 
 async def test_acknowledge_messages_updates_only_recipient_messages() -> None:

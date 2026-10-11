@@ -139,12 +139,14 @@ class AppProvider(Provider):
         self,
         file_dao: FileDAO,
         chat_dao: ChatDAO,
+        contact_dao: ContactDAO,
         user_dao: UserDAO,
         common_dao: CommonDAO,
     ) -> FileService:
         return FileService(
             file_dao=file_dao,
             chat_dao=chat_dao,
+            contact_dao=contact_dao,
             user_dao=user_dao,
             common_dao=common_dao,
         )

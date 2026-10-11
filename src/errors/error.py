@@ -58,6 +58,14 @@ class ChatPermissionDeniedError(BaseAppError):
     pass
 
 
+class MessageReplyNotFoundError(BaseAppError):
+    pass
+
+
+class MessageReplyAccessDeniedError(BaseAppError):
+    pass
+
+
 class FileTransferNotFoundError(BaseAppError):
     pass
 

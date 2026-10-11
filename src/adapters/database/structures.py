@@ -309,15 +309,19 @@ class Message(Base):
         Index("ix_messages_sender_failed", "sender_id", "failed"),
         Index("ix_messages_chat_timestamp", "chat_id", "timestamp"),
         Index(
-            "ix_messages_chat_logical_message",
+            "ix_messages_chat_general_message",
             "chat_id",
-            "logical_message_id",
+            "general_message_uuid",
         ),
         UniqueConstraint(
-            "sender_id",
-            "logical_message_id",
             "recipient_id",
-            name="uq_messages_logical_recipient",
+            "chat_id",
+            "general_message_uuid",
+            name="uq_messages_general_recipient",
+        ),
+        CheckConstraint(
+            "(chat_id IS NULL) = (general_message_uuid IS NULL)",
+            name="ck_messages_general_uuid_matches_chat",
         ),
         CheckConstraint(
             "(content IS NOT NULL) <> (file_content IS NOT NULL)",
@@ -334,7 +338,7 @@ class Message(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    logical_message_id: Mapped[UUID] = mapped_column(index=True)
+    general_message_uuid: Mapped[UUID | None] = mapped_column(index=True)
     sender_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     recipient_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
 
@@ -344,6 +348,7 @@ class Message(Base):
     reply_to_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL")
     )
+    reply_to_general_message_uuid: Mapped[UUID | None] = mapped_column(index=True)
 
     content_type: Mapped[MessageContentTypeEnum] = mapped_column(
         SAEnum(

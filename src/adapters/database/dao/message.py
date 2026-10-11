@@ -45,22 +45,40 @@ class MessageDAO:
             for result in results
         ]
 
-    async def get_chat_messages_by_logical_id(
+    async def get_chat_messages_by_general_uuid(
         self,
         sender_id: UUID,
         chat_id: UUID,
-        logical_message_id: UUID,
+        general_message_uuid: UUID,
     ) -> list[MessageDTO]:
         stmt = (
             select(Message)
             .where(
                 Message.sender_id == sender_id,
                 Message.chat_id == chat_id,
-                Message.logical_message_id == logical_message_id,
+                Message.general_message_uuid == general_message_uuid,
             )
             .order_by(Message.recipient_id)
         )
         results = await self._session.scalars(stmt)
+        return [
+            MessageDTO.model_validate(result, from_attributes=True)
+            for result in results
+        ]
+
+    async def get_chat_reply_targets(
+        self,
+        chat_id: UUID,
+        general_message_uuid: UUID,
+    ) -> list[MessageDTO]:
+        results = await self._session.scalars(
+            select(Message)
+            .where(
+                Message.chat_id == chat_id,
+                Message.general_message_uuid == general_message_uuid,
+            )
+            .order_by(Message.recipient_id)
+        )
         return [
             MessageDTO.model_validate(result, from_attributes=True)
             for result in results
@@ -80,6 +98,16 @@ class MessageDAO:
             MessageDTO.model_validate(result, from_attributes=True)
             for result in results
         ]
+
+    async def get_message_by_id(self, message_id: UUID) -> MessageDTO | None:
+        result = await self._session.scalar(
+            select(Message).where(Message.id == message_id)
+        )
+        return (
+            MessageDTO.model_validate(result, from_attributes=True)
+            if result is not None
+            else None
+        )
 
     async def acknowledge_messages(
         self,

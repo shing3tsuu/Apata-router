@@ -4,9 +4,14 @@ from uuid import UUID
 
 from src.adapters.database.dao.chat import ChatDAO
 from src.adapters.database.dao.common import CommonDAO, error_handler
+from src.adapters.database.dao.contact import ContactDAO
 from src.adapters.database.dao.file import FileDAO
 from src.adapters.database.dao.user import UserDAO
-from src.adapters.database.dto import CreateFileTransferDTO, FileTransferDTO
+from src.adapters.database.dto import (
+    CreateContactDTO,
+    CreateFileTransferDTO,
+    FileTransferDTO,
+)
 from src.adapters.database.structures import FileTransferStatusEnum
 from src.errors.error import (
     ChatNotFoundError,
@@ -31,11 +36,13 @@ class FileService:
         self,
         file_dao: FileDAO,
         chat_dao: ChatDAO,
+        contact_dao: ContactDAO,
         user_dao: UserDAO,
         common_dao: CommonDAO,
     ):
         self._file_dao = file_dao
         self._chat_dao = chat_dao
+        self._contact_dao = contact_dao
         self._user_dao = user_dao
         self._common_dao = common_dao
 
@@ -157,9 +164,36 @@ class FileService:
 
         completed_transfer = await self._file_dao.complete_transfer(upload_id)
         if completed_transfer is not None:
+            if completed_transfer.chat_id is None:
+                await self._ensure_blank_contact(
+                    completed_transfer.sender_id,
+                    completed_transfer.recipient_id,
+                )
             return completed_transfer
 
         raise FileTransferNotReadyError("Upload could not be completed")
+
+    async def _ensure_blank_contact(
+        self,
+        sender_id: UUID,
+        recipient_id: UUID,
+    ) -> None:
+        if sender_id == recipient_id:
+            return
+        existing_contact = await self._contact_dao.get_contact_between_users(
+            first_user_id=sender_id,
+            second_user_id=recipient_id,
+        )
+        if existing_contact is not None:
+            return
+        await self._contact_dao.add_blank_contacts(
+            [
+                CreateContactDTO(
+                    sender_id=sender_id,
+                    receiver_id=recipient_id,
+                )
+            ]
+        )
 
     @error_handler
     async def abort_upload(self, upload_id: UUID, sender_id: UUID) -> bool:

@@ -138,11 +138,12 @@ class ChatParticipantChangeDTO(BaseModel):
 
 class CreateMessageDTO(BaseModel):
     id: UUID = Field(default_factory=uuid4)
-    logical_message_id: UUID | None = None
+    general_message_uuid: UUID | None = None
     sender_id: UUID
     recipient_id: UUID
     chat_id: UUID | None = None
     reply_to_id: UUID | None = None
+    reply_to_general_message_uuid: UUID | None = None
     content_type: MessageContentTypeEnum = MessageContentTypeEnum.TEXT
     content: str | None = Field(default=None, min_length=1)
     file_name: str | None = Field(default=None, min_length=1, max_length=255)
@@ -158,8 +159,20 @@ class CreateMessageDTO(BaseModel):
 
     @model_validator(mode="after")
     def validate_payload(self) -> "CreateMessageDTO":
-        if self.logical_message_id is None:
-            self.logical_message_id = self.id
+        if (self.chat_id is None) != (self.general_message_uuid is None):
+            raise ValueError(
+                "general_message_uuid must be set exactly for chat messages"
+            )
+        if self.chat_id is None and self.reply_to_general_message_uuid is not None:
+            raise ValueError(
+                "reply_to_general_message_uuid is only valid for chat messages"
+            )
+        if (
+            self.chat_id is not None
+            and self.reply_to_id is not None
+            and self.reply_to_general_message_uuid is None
+        ):
+            raise ValueError("Chat reply_to_id requires reply_to_general_message_uuid")
 
         has_content = self.content is not None
         has_file = self.file_content is not None
