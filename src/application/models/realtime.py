@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 RealtimeEventType = Literal[
-    "session_ready",
+    "presence",
     "message_available",
     "presence_changed",
     "contact_changed",
@@ -32,3 +32,9 @@ class RealtimeBrokerEvent(RealtimeEvent):
             occurred_at=self.occurred_at,
             payload=self.payload,
         )
+
+
+class RealtimePresenceUpdate(BaseModel):
+    version: Literal[1]
+    type: Literal["presence_update"]
+    online: bool = Field(strict=True)

@@ -37,10 +37,15 @@ class RealtimePresenceService:
                 contact_dao=ContactDAO(session),
                 common_dao=common_dao,
             )
-            await user_service.update_user(
+            update = UpdateUserDTO(online=online)
+            if not online:
+                update = UpdateUserDTO(online=False, last_seen=changed_at)
+            updated_user = await user_service.update_user(
                 user_id,
-                UpdateUserDTO(online=online, last_seen=changed_at),
+                update,
             )
+            if updated_user is None:
+                raise ValueError(f"User {user_id} does not exist")
             contacts = await contact_service.get_contacts_by_user_id(user_id)
 
         recipient_ids = list(
@@ -57,4 +62,4 @@ class RealtimePresenceService:
             online,
             len(recipient_ids),
         )
-        return changed_at, recipient_ids
+        return updated_user.last_seen, recipient_ids

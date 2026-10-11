@@ -1,18 +1,42 @@
 import logging
+from uuid import UUID
 
 from dishka import FromDishka
 from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from pydantic import ValidationError
 
 from src.adapters.encryption.service.jwt import JWTService
 from src.adapters.realtime import (
     RealtimeConnectionManager,
     RealtimePublisher,
 )
-from src.application.models.realtime import RealtimeEvent
+from src.application.models.realtime import RealtimeEvent, RealtimePresenceUpdate
 from src.application.services import RealtimePresenceService
 
 from .user import AuthAPI
+
+
+async def _publish_presence(
+    user_id: UUID,
+    *,
+    online: bool,
+    presence_service: RealtimePresenceService,
+    realtime_publisher: RealtimePublisher,
+) -> None:
+    presence_time, contact_ids = await presence_service.set_presence(
+        user_id,
+        online=online,
+    )
+    await realtime_publisher.publish(
+        "presence_changed",
+        contact_ids,
+        {
+            "user_id": str(user_id),
+            "online": online,
+            "last_seen": presence_time.isoformat(),
+        },
+    )
 
 
 class RealtimeAPI:
@@ -56,36 +80,43 @@ class RealtimeAPI:
                 return
 
             connected = False
+            reported_online: bool | None = None
             try:
-                first_connection = await connection_manager.connect(
+                await connection_manager.connect(
                     user_id,
                     websocket,
                 )
                 connected = True
                 await websocket.send_json(
                     RealtimeEvent(
-                        type="session_ready",
+                        type="presence",
                         payload={"user_id": str(user_id)},
                     ).model_dump(mode="json")
                 )
 
-                if first_connection:
-                    presence_time, contact_ids = await presence_service.set_presence(
-                        user_id,
-                        online=True,
-                    )
-                    await realtime_publisher.publish(
-                        "presence_changed",
-                        contact_ids,
-                        {
-                            "user_id": str(user_id),
-                            "online": True,
-                            "last_seen": presence_time.isoformat(),
-                        },
-                    )
-
                 while True:
-                    await websocket.receive_text()
+                    raw_message = await websocket.receive_text()
+                    try:
+                        presence_update = RealtimePresenceUpdate.model_validate_json(
+                            raw_message
+                        )
+                    except ValidationError:
+                        logger.warning(
+                            "Ignoring invalid realtime command from user=%s",
+                            user_id,
+                        )
+                        continue
+
+                    if presence_update.online == reported_online:
+                        continue
+
+                    await _publish_presence(
+                        user_id,
+                        online=presence_update.online,
+                        presence_service=presence_service,
+                        realtime_publisher=realtime_publisher,
+                    )
+                    reported_online = presence_update.online
             except WebSocketDisconnect:
                 pass
             except Exception:
@@ -96,20 +127,10 @@ class RealtimeAPI:
                         user_id,
                         websocket,
                     )
-                    if last_connection:
-                        (
-                            presence_time,
-                            contact_ids,
-                        ) = await presence_service.set_presence(
+                    if last_connection and reported_online is not False:
+                        await _publish_presence(
                             user_id,
                             online=False,
-                        )
-                        await realtime_publisher.publish(
-                            "presence_changed",
-                            contact_ids,
-                            {
-                                "user_id": str(user_id),
-                                "online": False,
-                                "last_seen": presence_time.isoformat(),
-                            },
+                            presence_service=presence_service,
+                            realtime_publisher=realtime_publisher,
                         )

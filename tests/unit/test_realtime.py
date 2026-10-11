@@ -3,9 +3,29 @@ import logging
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+
 from src.adapters.realtime.broker import RealtimePublisher
 from src.adapters.realtime.connection import RealtimeConnectionManager
-from src.application.models.realtime import RealtimeBrokerEvent, RealtimeEvent
+from src.application.models.realtime import (
+    RealtimeBrokerEvent,
+    RealtimeEvent,
+    RealtimePresenceUpdate,
+)
+
+
+def test_presence_update_command_validation() -> None:
+    command = RealtimePresenceUpdate.model_validate(
+        {"version": 1, "type": "presence_update", "online": True}
+    )
+
+    assert command.online is True
+
+    with pytest.raises(ValidationError):
+        RealtimePresenceUpdate.model_validate(
+            {"version": 1, "type": "presence_update", "online": "yes"}
+        )
 
 
 async def test_connection_manager_tracks_multiple_sessions_per_user() -> None:

@@ -193,7 +193,7 @@ class AuthAPI:
                     ecdh_public_key=user_data.ecdh_public_key,
                     ecdh_signature=user_data.ecdh_signature,
                     last_seen=datetime.now(UTC),
-                    online=True,
+                    online=False,
                 )
             )
 
