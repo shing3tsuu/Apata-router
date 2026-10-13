@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from ..dao.jwt import JWTDAO
@@ -16,3 +17,6 @@ class JWTService:
 
     async def get_access_token_user_id(self, token: str) -> UUID:
         return await self._jwt_dao.get_access_token_user_id(token)
+
+    async def get_access_token_expiration(self, token: str) -> datetime:
+        return await self._jwt_dao.get_access_token_expiration(token)

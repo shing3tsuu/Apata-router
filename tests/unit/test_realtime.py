@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -12,6 +13,11 @@ from src.application.models.realtime import (
     RealtimeBrokerEvent,
     RealtimeEvent,
     RealtimePresenceUpdate,
+)
+from src.application.routers.realtime import (
+    ACCESS_TOKEN_EXPIRED_CLOSE_CODE,
+    ACCESS_TOKEN_EXPIRED_CLOSE_REASON,
+    _receive_before_access_token_expiration,
 )
 
 
@@ -26,6 +32,35 @@ def test_presence_update_command_validation() -> None:
         RealtimePresenceUpdate.model_validate(
             {"version": 1, "type": "presence_update", "online": "yes"}
         )
+
+
+async def test_expired_access_token_closes_established_websocket() -> None:
+    websocket = AsyncMock()
+
+    message = await _receive_before_access_token_expiration(
+        websocket,
+        datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    assert message is None
+    websocket.receive_text.assert_not_awaited()
+    websocket.close.assert_awaited_once_with(
+        code=ACCESS_TOKEN_EXPIRED_CLOSE_CODE,
+        reason=ACCESS_TOKEN_EXPIRED_CLOSE_REASON,
+    )
+
+
+async def test_websocket_message_is_received_before_token_expiration() -> None:
+    websocket = AsyncMock()
+    websocket.receive_text.return_value = '{"type":"presence_update"}'
+
+    message = await _receive_before_access_token_expiration(
+        websocket,
+        datetime.now(UTC) + timedelta(seconds=10),
+    )
+
+    assert message == '{"type":"presence_update"}'
+    websocket.close.assert_not_awaited()
 
 
 async def test_connection_manager_tracks_multiple_sessions_per_user() -> None:

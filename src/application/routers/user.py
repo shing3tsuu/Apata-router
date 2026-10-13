@@ -115,7 +115,10 @@ class AuthAPI:
             user_id = await jwt_service.get_access_token_user_id(token)
             logger.debug("WebSocket token validated for user_id: %s", user_id)
             return user_id
-        except (ExpiredSignatureError, JWTError, ValueError) as e:
+        except ExpiredSignatureError:
+            logger.debug("WebSocket access token expired")
+            raise
+        except (JWTError, ValueError) as e:
             logger.debug("WebSocket token validation failed: %s", str(e))
             return None
         except Exception:

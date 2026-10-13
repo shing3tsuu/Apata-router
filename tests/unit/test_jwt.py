@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -29,6 +30,21 @@ async def test_create_and_validate_access_token(jwt_service: JWTService) -> None
     token = await jwt_service.create_access_token(user_id=user_id)
 
     assert await jwt_service.get_access_token_user_id(token) == user_id
+
+
+async def test_access_token_exposes_its_expiration(
+    jwt_service: JWTService,
+) -> None:
+    issued_after = datetime.now(UTC)
+    token = await jwt_service.create_access_token(user_id=uuid4())
+
+    expiration = await jwt_service.get_access_token_expiration(token)
+
+    assert expiration.tzinfo is UTC
+    expected_expiration = issued_after + timedelta(
+        seconds=jwt_service.access_token_expires_in_seconds
+    )
+    assert abs(expiration - expected_expiration) <= timedelta(seconds=1)
 
 
 async def test_reject_non_access_token(jwt_service: JWTService) -> None:

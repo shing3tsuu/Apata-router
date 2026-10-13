@@ -1,9 +1,12 @@
+import asyncio
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from dishka import FromDishka
 from dishka.integrations.fastapi import inject
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from jose import ExpiredSignatureError
 from pydantic import ValidationError
 
 from src.adapters.encryption.service.jwt import JWTService
@@ -15,6 +18,35 @@ from src.application.models.realtime import RealtimeEvent, RealtimePresenceUpdat
 from src.application.services import RealtimePresenceService
 
 from .user import AuthAPI
+
+ACCESS_TOKEN_EXPIRED_CLOSE_CODE = 4401
+ACCESS_TOKEN_EXPIRED_CLOSE_REASON = "access_token_expired"
+
+
+async def _receive_before_access_token_expiration(
+    websocket: WebSocket,
+    token_expires_at: datetime,
+) -> str | None:
+    seconds_until_expiration = (
+        token_expires_at - datetime.now(UTC)
+    ).total_seconds()
+    if seconds_until_expiration <= 0:
+        await websocket.close(
+            code=ACCESS_TOKEN_EXPIRED_CLOSE_CODE,
+            reason=ACCESS_TOKEN_EXPIRED_CLOSE_REASON,
+        )
+        return None
+    try:
+        return await asyncio.wait_for(
+            websocket.receive_text(),
+            timeout=seconds_until_expiration,
+        )
+    except TimeoutError:
+        await websocket.close(
+            code=ACCESS_TOKEN_EXPIRED_CLOSE_CODE,
+            reason=ACCESS_TOKEN_EXPIRED_CLOSE_REASON,
+        )
+        return None
 
 
 async def _publish_presence(
@@ -70,12 +102,28 @@ class RealtimeAPI:
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                 return
 
-            user_id = await auth_api.get_current_user_ws(
-                token,
-                jwt_service,
-                logger,
-            )
+            try:
+                user_id = await auth_api.get_current_user_ws(
+                    token,
+                    jwt_service,
+                    logger,
+                )
+                token_expires_at = (
+                    await jwt_service.get_access_token_expiration(token)
+                    if user_id is not None
+                    else None
+                )
+            except ExpiredSignatureError:
+                await websocket.accept()
+                await websocket.close(
+                    code=ACCESS_TOKEN_EXPIRED_CLOSE_CODE,
+                    reason=ACCESS_TOKEN_EXPIRED_CLOSE_REASON,
+                )
+                return
             if user_id is None:
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+            if token_expires_at is None:
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                 return
 
@@ -95,7 +143,12 @@ class RealtimeAPI:
                 )
 
                 while True:
-                    raw_message = await websocket.receive_text()
+                    raw_message = await _receive_before_access_token_expiration(
+                        websocket,
+                        token_expires_at,
+                    )
+                    if raw_message is None:
+                        break
                     try:
                         presence_update = RealtimePresenceUpdate.model_validate_json(
                             raw_message

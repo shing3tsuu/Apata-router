@@ -33,6 +33,15 @@ class JWTDAO:
         )
         return user_id
 
+    async def get_access_token_expiration(self, token: str) -> datetime:
+        loop = asyncio.get_running_loop()
+        expiration = await loop.run_in_executor(
+            None,
+            self._get_access_token_expiration,
+            token,
+        )
+        return expiration
+
     def _create_access_token(self, user_id: UUID) -> str:
         expires_delta = timedelta(minutes=self._access_token_expire_minutes)
         expire = datetime.now(UTC) + expires_delta
@@ -47,13 +56,27 @@ class JWTDAO:
         return token
 
     def _get_access_token_user_id(self, token: str) -> UUID:
-        payload = jwt.decode(token, self._secret_key, algorithms=[self._algorithm])
-
-        if payload.get("type") != "access":
-            raise InvalidAccessTokenTypeError("JWT is not an access token")
+        payload = self._decode_access_token(token)
 
         user_id = payload.get("sub")
         if user_id is None:
             raise MissingAccessTokenSubjectError("Access token has no subject")
 
         return UUID(user_id)
+
+    def _get_access_token_expiration(self, token: str) -> datetime:
+        payload = self._decode_access_token(token)
+        expiration = payload.get("exp")
+        if (
+            not isinstance(expiration, (int, float))
+            or isinstance(expiration, bool)
+        ):
+            raise TypeError("Access token expiration must be a numeric timestamp")
+        return datetime.fromtimestamp(expiration, tz=UTC)
+
+    def _decode_access_token(self, token: str) -> dict:
+        payload = jwt.decode(token, self._secret_key, algorithms=[self._algorithm])
+
+        if payload.get("type") != "access":
+            raise InvalidAccessTokenTypeError("JWT is not an access token")
+        return payload
