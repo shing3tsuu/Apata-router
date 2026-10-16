@@ -27,7 +27,11 @@ from src.adapters.database.service import UserService
 from src.adapters.encryption.dto import SignatureAlgorithmEnum
 from src.adapters.encryption.service.ed import EDService
 from src.adapters.encryption.service.jwt import JWTService
-from src.errors.error import InvalidAccessTokenTypeError, MissingAccessTokenSubjectError
+from src.errors.error import (
+    InvalidAccessTokenTypeError,
+    MissingAccessTokenSubjectError,
+    RevokedAccessTokenError,
+)
 
 from ..models.user import (
     ChallengeLoginRequest,
@@ -79,6 +83,12 @@ class AuthAPI:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token type",
+            ) from None
+        except RevokedAccessTokenError:
+            logger.warning("Revoked access token received")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token revoked",
             ) from None
         except MissingAccessTokenSubjectError:
             logger.warning("Token with no subject received")
@@ -330,7 +340,7 @@ class AuthAPI:
             token: str = Depends(self.oauth2_scheme),
         ):
             user_id = await self.get_current_user(token, jwt_service, logger)
-            # TODO maybe add some logic, and invalidation jwt token before expire time of course
+            await jwt_service.revoke_access_token(token)
             logger.info("User logout: ID %s", user_id)
             return {"status": "success", "message": "Logged out successfully"}
 
@@ -343,6 +353,7 @@ class AuthAPI:
         ) -> dict[str, str]:
             """Client-compatible logout endpoint for the current access token."""
             user_id = await self.get_current_user(token, jwt_service, logger)
+            await jwt_service.revoke_access_token(token)
             logger.info("User logout: ID %s", user_id)
             return {}
 

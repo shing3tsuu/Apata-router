@@ -123,3 +123,7 @@ class InvalidAccessTokenTypeError(ValueError):
 
 class MissingAccessTokenSubjectError(ValueError):
     """Raised when an access token does not identify a user."""
+
+
+class RevokedAccessTokenError(ValueError):
+    """Raised when an access token has been explicitly revoked."""

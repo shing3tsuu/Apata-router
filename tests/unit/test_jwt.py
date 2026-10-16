@@ -1,28 +1,40 @@
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
-from dishka import make_async_container
 from jose import jwt
 
+from src.adapters.encryption.dao.jwt import JWTDAO
 from src.adapters.encryption.service.jwt import JWTService
-from src.errors.error import InvalidAccessTokenTypeError, MissingAccessTokenSubjectError
-from src.providers import AppProvider
+from src.errors.error import (
+    InvalidAccessTokenTypeError,
+    MissingAccessTokenSubjectError,
+    RevokedAccessTokenError,
+)
 
 
-@pytest_asyncio.fixture
-async def jwt_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[JWTService]:
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
-    container = make_async_container(AppProvider())
-    try:
-        async with container() as request_container:
-            yield await request_container.get(JWTService)
-    finally:
-        await container.close()
+class FakeRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def set(self, key: str, value: str, *, ex: int) -> None:
+        assert ex > 0
+        self.values[key] = value
+
+    async def exists(self, key: str) -> int:
+        return int(key in self.values)
+
+
+@pytest.fixture
+def jwt_service() -> JWTService:
+    return JWTService(
+        jwt_dao=JWTDAO(
+            algorithm="HS256",
+            access_token_expire_minutes=480,
+            secret_key="test-secret",
+        ),
+        redis_client=FakeRedis(),  # type: ignore[arg-type]
+    )
 
 
 async def test_create_and_validate_access_token(jwt_service: JWTService) -> None:
@@ -45,6 +57,27 @@ async def test_access_token_exposes_its_expiration(
         seconds=jwt_service.access_token_expires_in_seconds
     )
     assert abs(expiration - expected_expiration) <= timedelta(seconds=1)
+
+
+async def test_access_tokens_for_same_user_have_unique_session_identity(
+    jwt_service: JWTService,
+) -> None:
+    user_id = uuid4()
+
+    first = await jwt_service.create_access_token(user_id)
+    second = await jwt_service.create_access_token(user_id)
+
+    assert first != second
+
+
+async def test_revoked_access_token_is_rejected(jwt_service: JWTService) -> None:
+    token = await jwt_service.create_access_token(user_id=uuid4())
+
+    await jwt_service.revoke_access_token(token)
+
+    assert await jwt_service.is_access_token_revoked(token) is True
+    with pytest.raises(RevokedAccessTokenError):
+        await jwt_service.get_access_token_user_id(token)
 
 
 async def test_reject_non_access_token(jwt_service: JWTService) -> None:

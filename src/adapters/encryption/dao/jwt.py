@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from jose import jwt
 
@@ -51,6 +51,7 @@ class JWTDAO:
             "exp": expire,
             "type": "access",
             "iat": datetime.now(UTC),
+            "jti": str(uuid4()),
         }
         token = jwt.encode(payload, self._secret_key, algorithm=self._algorithm)
         return token

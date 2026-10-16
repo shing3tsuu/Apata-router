@@ -238,5 +238,9 @@ class AppProvider(Provider):
         )
 
     @provide(scope=Scope.APP)
-    def jwt_service(self, jwt_dao: JWTDAO) -> JWTService:
-        return JWTService(jwt_dao=jwt_dao)
+    def jwt_service(
+        self,
+        jwt_dao: JWTDAO,
+        redis_client: redis.Redis,
+    ) -> JWTService:
+        return JWTService(jwt_dao=jwt_dao, redis_client=redis_client)
